@@ -1,247 +1,300 @@
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, scrolledtext
 import serial
 import serial.tools.list_ports
 import threading
 import time
 import re
+import os
 
 class CNCControlApp:
     def __init__(self, root):
-        """
-        Constructor de la clase (Equivalente en C++: CNCControlApp()).
-        Aquí inicializamos las variables y la interfaz gráfica.
-        """
         self.root = root
         self.root.title("Software de Control CNC - Proyecto de Grado")
-        self.root.geometry("900x600")
+        self.root.geometry("1300x700") # Ventana más ancha para acomodar los dos lienzos
 
-        # Variables de estado (Equivalente a variables privadas en C++)
+        # Variables de estado
         self.puerto_serial = None
         self.gcode_lista = []
         self.conectado = False
+        self.archivo_cargado = False
+
+        # Variables de visualización
+        self.escala_visual = 1.0
+        self.offset_x = 0
+        self.offset_y = 0
+        self.cursor_herramienta = None 
 
         self.crear_interfaz()
-        # Variables de escala para la visualización (Equivalente a variables globales de la clase)
-        self.escala_visual = 40.0
-        self.offset_x = 50
-        self.offset_y = 550
-        self.cursor_herramienta = None # Representará la fresa de la CNC
 
     def crear_interfaz(self):
-        """Crea los botones y el área visual de la aplicación."""
-        # --- Panel de Controles (Izquierda) ---
-        panel_control = tk.Frame(self.root, width=250, bg="#f0f0f0")
+        # --- PANEL DE CONTROLES (Izquierda) ---
+        panel_control = tk.Frame(self.root, width=300, bg="#f0f0f0")
         panel_control.pack(side=tk.LEFT, fill=tk.Y, padx=10, pady=10)
 
-        tk.Label(panel_control, text="Puerto Serial (Arduino):").pack(pady=5)
-        
-        # Buscar puertos disponibles
+        # 1. Conexión
+        tk.Label(panel_control, text="1. CONEXIÓN", font=("Arial", 10, "bold"), bg="#f0f0f0").pack(pady=(5,0))
         puertos = [puerto.device for puerto in serial.tools.list_ports.comports()]
-        self.puerto_seleccionado = tk.StringVar()
-        if puertos:
-            self.puerto_seleccionado.set(puertos[0])
+        self.puerto_seleccionado = tk.StringVar(value=puertos[0] if puertos else "Ninguno")
+        tk.OptionMenu(panel_control, self.puerto_seleccionado, *puertos if puertos else ["Ninguno"]).pack(pady=5)
         
-        self.menu_puertos = tk.OptionMenu(panel_control, self.puerto_seleccionado, *puertos if puertos else ["Ninguno"])
-        self.menu_puertos.pack(pady=5)
+        self.btn_conectar = tk.Button(panel_control, text="Conectar e Inicializar GRBL", command=self.conectar_grbl, bg="lightblue")
+        self.btn_conectar.pack(pady=5, fill=tk.X)
 
-        self.btn_conectar = tk.Button(panel_control, text="Conectar GRBL", command=self.conectar_grbl, bg="lightblue")
-        self.btn_conectar.pack(pady=10, fill=tk.X)
+        self.btn_config = tk.Button(panel_control, text="⚙️ Configuración GRBL", command=self.abrir_configuracion, state=tk.DISABLED)
+        self.btn_config.pack(pady=5, fill=tk.X)
 
+        # 2. Control Manual
+        self.frame_manual = tk.LabelFrame(panel_control, text="2. CONTROL MANUAL (Jog)", bg="#f0f0f0")
+        self.frame_manual.pack(pady=10, fill=tk.X)
+        
+        tk.Button(self.frame_manual, text="Y+", width=5, command=lambda: self.mover_manual("Y", 10)).grid(row=0, column=1, pady=2)
+        tk.Button(self.frame_manual, text="X-", width=5, command=lambda: self.mover_manual("X", -10)).grid(row=1, column=0, padx=2)
+        tk.Button(self.frame_manual, text="X+", width=5, command=lambda: self.mover_manual("X", 10)).grid(row=1, column=2, padx=2)
+        tk.Button(self.frame_manual, text="Y-", width=5, command=lambda: self.mover_manual("Y", -10)).grid(row=2, column=1, pady=2)
+        tk.Button(self.frame_manual, text="Set Cero (X0 Y0)", bg="yellow", command=self.set_cero_manual).grid(row=3, column=0, columnspan=3, pady=5)
+
+        # 3. Archivos y Ruteo
+        tk.Label(panel_control, text="3. ARCHIVO Y RUTEO", font=("Arial", 10, "bold"), bg="#f0f0f0").pack(pady=(15,0))
         self.btn_cargar = tk.Button(panel_control, text="Cargar Archivo Gerber", command=self.cargar_gerber)
-        self.btn_cargar.pack(pady=10, fill=tk.X)
+        self.btn_cargar.pack(pady=5, fill=tk.X)
+
+        self.lbl_archivo = tk.Label(panel_control, text="Ningún archivo cargado", fg="blue", wraplength=280, bg="#f0f0f0")
+        self.lbl_archivo.pack(pady=5)
 
         self.btn_iniciar = tk.Button(panel_control, text="Iniciar Ruteo", command=self.iniciar_ruteo, bg="lightgreen", state=tk.DISABLED)
-        self.btn_iniciar.pack(pady=10, fill=tk.X)
+        self.btn_iniciar.pack(pady=5, fill=tk.X)
         
-        self.btn_detener = tk.Button(panel_control, text="Detener (Parada de Emergencia)", command=self.detener_ruteo, bg="salmon")
-        self.btn_detener.pack(pady=10, fill=tk.X)
+        self.btn_detener = tk.Button(panel_control, text="Parada de Emergencia", command=self.detener_ruteo, bg="salmon")
+        self.btn_detener.pack(pady=5, fill=tk.X)
 
-        self.lbl_estado = tk.Label(panel_control, text="Estado: Desconectado", fg="red")
+        self.lbl_estado = tk.Label(panel_control, text="Estado: Desconectado", fg="red", font=("Arial", 10, "bold"), bg="#f0f0f0")
         self.lbl_estado.pack(side=tk.BOTTOM, pady=20)
 
-        # --- Panel de Visualización (Derecha) ---
+        # --- PANEL DE VISUALIZACIÓN (Derecha - Dividido en dos) ---
         panel_visual = tk.Frame(self.root)
         panel_visual.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        tk.Label(panel_visual, text="Visualización en Tiempo Real de Trayectoria").pack()
-        # Canvas es un lienzo donde dibujaremos las líneas como si fuera la herramienta de la CNC
-        self.canvas = tk.Canvas(panel_visual, bg="black")
-        self.canvas.pack(fill=tk.BOTH, expand=True)
+        # Lienzo 1: Vista Previa
+        marco_ref = tk.LabelFrame(panel_visual, text="Vista Previa (Diseño Original)", font=("Arial", 10, "bold"))
+        marco_ref.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
+        self.canvas_ref = tk.Canvas(marco_ref, bg="black")
+        self.canvas_ref.pack(fill=tk.BOTH, expand=True)
+
+        # Lienzo 2: Trazado en Vivo
+        marco_rt = tk.LabelFrame(panel_visual, text="Trazado en Vivo (Tiempo Real CNC)", font=("Arial", 10, "bold"))
+        marco_rt.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(5, 0))
+        self.canvas_rt = tk.Canvas(marco_rt, bg="black")
+        self.canvas_rt.pack(fill=tk.BOTH, expand=True)
+
+    def enviar_comando_grbl(self, comando, esperar_respuesta=True):
+        if self.puerto_serial and self.conectado:
+            self.puerto_serial.write((comando + '\n').encode('utf-8'))
+            if esperar_respuesta:
+                time.sleep(0.1) 
+                return self.puerto_serial.read_all().decode('utf-8')
+        return ""
 
     def conectar_grbl(self):
-        """Establece comunicación serial con el Arduino que contiene GRBL."""
         puerto = self.puerto_seleccionado.get()
         if puerto == "Ninguno":
-            messagebox.showerror("Error", "No se encontraron puertos COM.")
+            messagebox.showerror("Error", "Seleccione un puerto válido.")
             return
-
         try:
-            # GRBL trabaja por defecto a 115200 baudios
             self.puerto_serial = serial.Serial(puerto, 115200, timeout=1)
-            # Despertar a GRBL enviando enter
             self.puerto_serial.write(b"\r\n\r\n")
-            time.sleep(2)  # Esperar a que inicialice
+            time.sleep(2)
             self.puerto_serial.flushInput()
-            
             self.conectado = True
-            self.lbl_estado.config(text=f"Estado: Conectado a {puerto}", fg="green")
+            
+            self.enviar_comando_grbl("$X") 
+            self.enviar_comando_grbl("$130=190") 
+            self.enviar_comando_grbl("$131=190") 
+            self.enviar_comando_grbl("$20=1")    
+            self.enviar_comando_grbl("G92 X0 Y0 Z0")
+
+            self.lbl_estado.config(text=f"Conectado: {puerto} | 19x19cm", fg="green")
             self.btn_conectar.config(state=tk.DISABLED)
+            self.btn_config.config(state=tk.NORMAL)
+            self.actualizar_estado_manual()
         except Exception as e:
-            messagebox.showerror("Error de Conexión", f"No se pudo conectar: {e}")
+            messagebox.showerror("Error de Conexión", f"Error: {e}")
+
+    def abrir_configuracion(self):
+        if not self.conectado: return
+        vent_conf = tk.Toplevel(self.root)
+        vent_conf.title("Configuración Interna de GRBL")
+        vent_conf.geometry("400x400")
+
+        tk.Label(vent_conf, text="Consola GRBL (Ej. ingresa $$ para ver config):").pack(pady=5)
+        txt_consola = scrolledtext.ScrolledText(vent_conf, width=45, height=15)
+        txt_consola.pack(pady=5)
+
+        self.puerto_serial.flushInput()
+        respuesta = self.enviar_comando_grbl("$$")
+        txt_consola.insert(tk.END, respuesta)
+
+        frame_envio = tk.Frame(vent_conf)
+        frame_envio.pack(pady=5)
+        
+        entrada_cmd = tk.Entry(frame_envio, width=25)
+        entrada_cmd.pack(side=tk.LEFT, padx=5)
+
+        def enviar_cmd():
+            cmd = entrada_cmd.get()
+            resp = self.enviar_comando_grbl(cmd)
+            txt_consola.insert(tk.END, f"\n> {cmd}\n{resp}")
+            entrada_cmd.delete(0, tk.END)
+
+        tk.Button(frame_envio, text="Enviar", command=enviar_cmd).pack(side=tk.LEFT)
+
+    def mover_manual(self, eje, distancia):
+        if self.conectado and not self.archivo_cargado:
+            comando = f"G91 G0 {eje}{distancia} \n G90"
+            self.enviar_comando_grbl(comando, esperar_respuesta=False)
+
+    def set_cero_manual(self):
+        if self.conectado:
+            self.enviar_comando_grbl("G92 X0 Y0", esperar_respuesta=False)
+            messagebox.showinfo("Set Cero", "Posición actual establecida como Origen (X0 Y0).")
+
+    def actualizar_estado_manual(self):
+        estado = tk.DISABLED if self.archivo_cargado else tk.NORMAL
+        for widget in self.frame_manual.winfo_children():
+            widget.configure(state=estado)
 
     def cargar_gerber(self):
-            """Abre un archivo Gerber, extrae las coordenadas y genera G-code en memoria."""
-            ruta_archivo = filedialog.askopenfilename(title="Seleccionar archivo Gerber", filetypes=(("Gerber Files", "*.gbr *.gtl *.gbl"), ("All Files", "*.*")))
-            if not ruta_archivo:
-                return
+        ruta_archivo = filedialog.askopenfilename(title="Seleccionar archivo Gerber", filetypes=(("Gerber", "*.gbr *.gtl *.gbl"), ("Todos", "*.*")))
+        if not ruta_archivo:
+            return
 
-            self.gcode_lista.clear()
-            self.canvas.delete("all") # Limpiar visualizador
+        nombre_archivo = os.path.basename(ruta_archivo)
+        self.lbl_archivo.config(text=f"Archivo: {nombre_archivo}")
+        
+        self.archivo_cargado = True
+        self.actualizar_estado_manual()
+
+        self.gcode_lista.clear()
+        # Limpiar ambos lienzos y resetear el cursor
+        self.canvas_ref.delete("all")
+        self.canvas_rt.delete("all")
+        self.cursor_herramienta = None
+        
+        with open(ruta_archivo, 'r') as f:
+            lineas_gerber = f.readlines()
+
+        divisor = 10000.0 
+        min_x, max_x = float('inf'), float('-inf')
+        min_y, max_y = float('inf'), float('-inf')
+
+        for linea in lineas_gerber:
+            match_x = re.search(r'X([\+\-]?\d+)', linea)
+            match_y = re.search(r'Y([\+\-]?\d+)', linea)
+            if match_x: 
+                val_x = float(match_x.group(1)) / divisor
+                min_x, max_x = min(min_x, val_x), max(max_x, val_x)
+            if match_y:
+                val_y = float(match_y.group(1)) / divisor
+                min_y, max_y = min(min_y, val_y), max(max_y, val_y)
+
+        self.root.update_idletasks()
+        # Usamos el ancho y alto del lienzo de referencia para escalar
+        ancho_canvas = self.canvas_ref.winfo_width()
+        alto_canvas = self.canvas_ref.winfo_height()
+
+        rango_x = (max_x - min_x) if (max_x - min_x) > 0 else 1
+        rango_y = (max_y - min_y) if (max_y - min_y) > 0 else 1
+
+        escala_x = (ancho_canvas - 80) / rango_x
+        escala_y = (alto_canvas - 80) / rango_y
+
+        self.escala_visual = min(escala_x, escala_y)
+
+        self.offset_x = 40 - (min_x * self.escala_visual)
+        self.offset_y = alto_canvas - 40 + (min_y * self.escala_visual) 
+
+        self.gcode_lista.append("G21\nG90\nM3 S1000") 
+
+        prev_x, prev_y = 0.0, 0.0
+        for linea in lineas_gerber:
+            match_x = re.search(r'X([\+\-]?\d+)', linea)
+            match_y = re.search(r'Y([\+\-]?\d+)', linea)
             
-            with open(ruta_archivo, 'r') as f:
-                lineas_gerber = f.readlines()
+            coord_x = float(match_x.group(1)) / divisor if match_x else prev_x
+            coord_y = float(match_y.group(1)) / divisor if match_y else prev_y
 
-            self.gcode_lista.append("G21") # Configurar en milímetros
-            self.gcode_lista.append("G90") # Coordenadas absolutas
-            self.gcode_lista.append("M3 S1000") # Encender husillo (spindle)
-
-            coord_x = 0.0
-            coord_y = 0.0
-            prev_x = 0.0
-            prev_y = 0.0
-            
-            # --- PARÁMETROS DE VISUALIZACIÓN AJUSTABLES ---
-            # Si la imagen se ve muy pequeña o enorme, cambia este divisor (ej. 1000.0, 100000.0)
-            divisor = 10000.0 
-            escala_visual = 8.0 # Multiplicador para hacer el dibujo más grande en la pantalla
-            offset_x = 50       # Margen izquierdo en píxeles
-            offset_y = 550      # Empuja el origen hacia abajo en la pantalla (ajusta según el tamaño de tu ventana)
-            # ----------------------------------------------
-
-            for linea in lineas_gerber:
-                # Expresiones regulares para encontrar X e Y en el Gerber
-                match_x = re.search(r'X([\+\-]?\d+)', linea)
-                match_y = re.search(r'Y([\+\-]?\d+)', linea)
+            if 'D01' in linea or 'D1*' in linea:
+                self.gcode_lista.append(f"G1 X{coord_x:.3f} Y{coord_y:.3f} F200")
+                px1 = (prev_x * self.escala_visual) + self.offset_x
+                py1 = self.offset_y - (prev_y * self.escala_visual)
+                px2 = (coord_x * self.escala_visual) + self.offset_x
+                py2 = self.offset_y - (coord_y * self.escala_visual)
                 
-                if match_x or match_y:
-                    if match_x: coord_x = float(match_x.group(1)) / divisor
-                    if match_y: coord_y = float(match_y.group(1)) / divisor
-
-                    # Capturamos D01 o D1 (corte), D02 o D2 (movimiento rápido)
-                    if 'D01' in linea or 'D1*' in linea:
-                        self.gcode_lista.append(f"G1 X{coord_x:.3f} Y{coord_y:.3f} F200")
-                        
-                        # Convertir coordenadas CNC a píxeles de pantalla (invirtiendo el eje Y)
-                        pantalla_x1 = (prev_x * escala_visual) + offset_x
-                        pantalla_y1 = offset_y - (prev_y * escala_visual)
-                        pantalla_x2 = (coord_x * escala_visual) + offset_x
-                        pantalla_y2 = offset_y - (coord_y * escala_visual)
-
-                        # Dibujar una línea desde el punto anterior al nuevo punto
-                        self.canvas.create_line(pantalla_x1, pantalla_y1, pantalla_x2, pantalla_y2, fill="#00FF00", width=2)
-                    
-                    elif 'D02' in linea or 'D2*' in linea:
-                        self.gcode_lista.append(f"G0 X{coord_x:.3f} Y{coord_y:.3f}")
-                    
-                    # Actualizar la posición previa para el siguiente trazo
-                    prev_x = coord_x
-                    prev_y = coord_y
+                # Dibujamos SOLO en la pantalla de Vista Previa
+                self.canvas_ref.create_line(px1, py1, px2, py2, fill="#00FF00", width=1)
+                
+            elif 'D02' in linea or 'D2*' in linea:
+                self.gcode_lista.append(f"G0 X{coord_x:.3f} Y{coord_y:.3f}")
             
-            self.gcode_lista.append("M5") # Apagar husillo
-            self.gcode_lista.append("G0 X0 Y0") # Volver al origen
+            prev_x, prev_y = coord_x, coord_y
 
-            messagebox.showinfo("Éxito", f"Archivo Gerber cargado. {len(self.gcode_lista)} comandos generados.")
-            if self.conectado:
-                self.btn_iniciar.config(state=tk.NORMAL)
+        self.gcode_lista.append("M5\nG0 X0 Y0")
+
+        if self.conectado:
+            self.btn_iniciar.config(state=tk.NORMAL)
 
     def iniciar_ruteo(self):
-        """Inicia un hilo (thread) separado para no congelar la interfaz mientras se envía a GRBL."""
         self.btn_iniciar.config(state=tk.DISABLED)
-        
-        # --- NUEVO: Resetear la memoria de posición al iniciar ---
         self.pos_previa_x = None
         self.pos_previa_y = None
-        # ---------------------------------------------------------
-        
-        hilo_envio = threading.Thread(target=self.hilo_enviar_gcode)
-        hilo_envio.start()
-            
+        threading.Thread(target=self.hilo_enviar_gcode, daemon=True).start()
+
     def actualizar_cursor_tiempo_real(self, comando):
-            """
-            Extrae las coordenadas X e Y del G-Code, mueve el cursor y dibuja el rastro del maquinado.
-            """
-            match_x = re.search(r'X([\+\-]?\d+\.?\d*)', comando)
-            match_y = re.search(r'Y([\+\-]?\d+\.?\d*)', comando)
+        match_x = re.search(r'X([\+\-]?\d+\.?\d*)', comando)
+        match_y = re.search(r'Y([\+\-]?\d+\.?\d*)', comando)
+        
+        if match_x and match_y:
+            coord_x = float(match_x.group(1))
+            coord_y = float(match_y.group(1))
             
-            if match_x and match_y:
-                coord_x = float(match_x.group(1))
-                coord_y = float(match_y.group(1))
-                
-                pantalla_x = (coord_x * self.escala_visual) + self.offset_x
-                pantalla_y = self.offset_y - (coord_y * self.escala_visual)
-                
-                # --- NUEVO: DIBUJAR EL TRAZADO (RASTRO) ---
-                # Si existe una posición anterior, dibujamos una línea hasta la nueva
-                if self.pos_previa_x is not None and self.pos_previa_y is not None:
-                    # Solo pintamos el trazo si es un comando de corte (G1)
-                    # Si es un G0 (movimiento rápido en el aire), el cursor se mueve pero no pinta
-                    if 'G1' in comando:
-                        self.canvas.create_line(
-                            self.pos_previa_x, self.pos_previa_y, 
-                            pantalla_x, pantalla_y, 
-                            fill="cyan", width=2
-                        )
-                
-                # Actualizamos la memoria: la posición actual será la "previa" en el siguiente ciclo
-                self.pos_previa_x = pantalla_x
-                self.pos_previa_y = pantalla_y
-                # ------------------------------------------
+            px = (coord_x * self.escala_visual) + self.offset_x
+            py = self.offset_y - (coord_y * self.escala_visual)
+            
+            if self.pos_previa_x is not None and self.pos_previa_y is not None:
+                if 'G1' in comando:
+                    # Dibujamos el trazado SOLO en la pantalla en Vivo
+                    self.canvas_rt.create_line(self.pos_previa_x, self.pos_previa_y, px, py, fill="cyan", width=3)
+            
+            self.pos_previa_x, self.pos_previa_y = px, py
 
-                # Dibujar o mover el cursor (fresa)
-                if self.cursor_herramienta is None:
-                    self.cursor_herramienta = self.canvas.create_oval(
-                        pantalla_x-6, pantalla_y-6, pantalla_x+6, pantalla_y+6, fill="red"
-                    )
-                else:
-                    self.canvas.coords(
-                        self.cursor_herramienta, 
-                        pantalla_x-6, pantalla_y-6, pantalla_x+6, pantalla_y+6
-                    )
-                    # Forzar a que el punto rojo siempre se dibuje "por encima" de las líneas cyan
-                    self.canvas.tag_raise(self.cursor_herramienta)
-                    
+            # El cursor de la herramienta se dibuja SOLO en la pantalla en Vivo
+            if self.cursor_herramienta is None:
+                self.cursor_herramienta = self.canvas_rt.create_oval(px-6, py-6, px+6, py+6, fill="red")
+            else:
+                self.canvas_rt.coords(self.cursor_herramienta, px-6, py-6, px+6, py+6)
+                self.canvas_rt.tag_raise(self.cursor_herramienta)
+
     def hilo_enviar_gcode(self):
-            """Función que envía línea por línea a GRBL esperando el 'ok'."""
-            for comando in self.gcode_lista:
-                print(f"Enviando: {comando}") 
-                
-                comando_bytes = (comando + '\n').encode('utf-8')
-                self.puerto_serial.write(comando_bytes)
-                
-                # --- NUEVO: Llamar a la actualización visual de forma segura ---
-                self.root.after(0, self.actualizar_cursor_tiempo_real, comando)
-                
-                # Esperar respuesta de GRBL (Handshake)
-                respuesta = self.puerto_serial.readline().decode('utf-8').strip()
-                while "ok" not in respuesta and "error" not in respuesta:
-                    respuesta = self.puerto_serial.readline().decode('utf-8').strip()
-
-                if "error" in respuesta:
-                    print(f"GRBL reportó un error con el comando: {comando}")
+        for comando in self.gcode_lista:
+            comando_bytes = (comando + '\n').encode('utf-8')
+            self.puerto_serial.write(comando_bytes)
+            self.root.after(0, self.actualizar_cursor_tiempo_real, comando)
             
-            self.btn_iniciar.config(state=tk.NORMAL)
-            messagebox.showinfo("Proceso Terminado", "El ruteo de la PCB ha finalizado con éxito.")
+            respuesta = self.puerto_serial.readline().decode('utf-8').strip()
+            while "ok" not in respuesta and "error" not in respuesta:
+                respuesta = self.puerto_serial.readline().decode('utf-8').strip()
+
+        self.btn_iniciar.config(state=tk.NORMAL)
+        self.archivo_cargado = False
+        self.root.after(0, self.actualizar_estado_manual)
+        messagebox.showinfo("Terminado", "El ruteo ha finalizado con éxito.")
 
     def detener_ruteo(self):
-        """Parada de emergencia (Soft Reset en GRBL)."""
         if self.conectado:
-            # Comando especial de GRBL para parada inmediata (Ctrl+X)
             self.puerto_serial.write(b'\x18') 
-            messagebox.showwarning("Emergencia", "Proceso detenido por el usuario.")
+            messagebox.showwarning("Emergencia", "Proceso detenido. Máquina reiniciada (Soft Reset).")
 
-# Ejecución principal de la aplicación (Equivalente al int main() de C++)
 if __name__ == "__main__":
     ventana_principal = tk.Tk()
     app = CNCControlApp(ventana_principal)
-    ventana_principal.mainloop() # Bucle infinito que mantiene la interfaz abierta
+    ventana_principal.mainloop()
