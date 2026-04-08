@@ -10,7 +10,7 @@ import os
 class CNCControlApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Control CNC PCB - Eje Z y Baudios")
+        self.root.title("Control CNC PCB - Sistema de Bloqueo de Seguridad")
         self.root.geometry("1400x750")
 
         # Variables de estado
@@ -18,7 +18,7 @@ class CNCControlApp:
         self.gcode_lista = []
         self.conectado = False
         self.archivo_cargado = False
-        self.ruteo_activo = False # Nueva bandera para controlar el hilo de envío
+        self.ruteo_activo = False
 
         # Parámetros de Grabado PCB (Eje Z)
         self.Z_SEGURIDAD = 5.0  # Altura para moverse sin tocar la placa
@@ -81,6 +81,10 @@ class CNCControlApp:
         self.btn_cargar = tk.Button(panel_control, text="Cargar Gerber", command=self.cargar_gerber)
         self.btn_cargar.pack(pady=5, fill=tk.X)
 
+        # Nuevo botón para desbloquear (limpiar archivo)
+        self.btn_limpiar = tk.Button(panel_control, text="Descartar Archivo (Desbloquear Manual)", command=self.limpiar_archivo, state=tk.DISABLED, bg="#ffe6e6")
+        self.btn_limpiar.pack(pady=2, fill=tk.X)
+
         self.lbl_archivo = tk.Label(panel_control, text="Sin archivo", fg="blue", bg="#f0f0f0")
         self.lbl_archivo.pack()
 
@@ -101,13 +105,11 @@ class CNCControlApp:
         panel_visual.columnconfigure(1, weight=4, uniform="grupo1")
         panel_visual.rowconfigure(0, weight=1)
 
-        # Trazado en Vivo (60% Izquierda)
         marco_rt = tk.LabelFrame(panel_visual, text="Monitor CNC en Tiempo Real", font=("Arial", 11, "bold"), fg="#0044cc")
         marco_rt.grid(row=0, column=0, sticky="nsew", padx=5)
         self.canvas_rt = tk.Canvas(marco_rt, bg="black")
         self.canvas_rt.pack(fill=tk.BOTH, expand=True)
 
-        # Referencia y Coordenadas (40% Derecha)
         marco_ref = tk.LabelFrame(panel_visual, text="Referencia y Coordenadas", font=("Arial", 10, "bold"))
         marco_ref.grid(row=0, column=1, sticky="nsew", padx=5)
         
@@ -203,11 +205,35 @@ class CNCControlApp:
             messagebox.showinfo("Reset Z", "Punta de herramienta fijada como Z0 (superficie).")
 
     def actualizar_estado_manual(self):
-        # Deshabilita el control manual si se está grabando
-        estado = tk.DISABLED if self.ruteo_activo else tk.NORMAL
-        for widget in self.frame_manual.winfo_children():
-            try: widget.configure(state=estado)
-            except: pass
+        # Deshabilita el control si se está grabando O si ya se cargó un archivo
+        estado = tk.DISABLED if (self.ruteo_activo or self.archivo_cargado) else tk.NORMAL
+        
+        # Búsqueda recursiva para apagar también los botones dentro de los frames de XY y Z
+        def set_estado_widgets(parent):
+            for child in parent.winfo_children():
+                try: child.configure(state=estado)
+                except: pass
+                set_estado_widgets(child) # Llamada recursiva
+
+        # Aplicar el estado a todo lo que esté dentro de frame_manual
+        set_estado_widgets(self.frame_manual)
+
+    def limpiar_archivo(self):
+        """Descarga el archivo actual y desbloquea el control manual."""
+        self.archivo_cargado = False
+        self.gcode_lista.clear()
+        self.lbl_archivo.config(text="Sin archivo")
+        self.canvas_ref.delete("all")
+        self.canvas_rt.delete("all")
+        self.txt_coordenadas.delete("1.0", tk.END)
+        self.cursor_herramienta = None
+        if hasattr(self, 'pos_p_x'):
+            del self.pos_p_x
+            del self.pos_p_y
+            
+        self.btn_iniciar.config(state=tk.DISABLED)
+        self.btn_limpiar.config(state=tk.DISABLED)
+        self.actualizar_estado_manual()
 
     def cargar_gerber(self):
         ruta = filedialog.askopenfilename(filetypes=[("Gerber", "*.gbr *.gtl *.gbl")])
@@ -217,7 +243,7 @@ class CNCControlApp:
         self.archivo_cargado = True
         self.gcode_lista.clear()
         
-        # Limpiar pantallas y reinicios
+        # Limpiar pantallas
         self.canvas_ref.delete("all")
         self.canvas_rt.delete("all")
         self.txt_coordenadas.delete("1.0", tk.END)
@@ -238,7 +264,6 @@ class CNCControlApp:
                 vy = float(my.group(1))/divisor if my else 0
                 coords.append((vx, vy))
 
-        # Evitar colapso si el archivo no tiene coordenadas válidas
         if not coords:
             messagebox.showerror("Error", "El archivo Gerber no contiene coordenadas válidas de trazado.")
             self.archivo_cargado = False
@@ -291,6 +316,10 @@ class CNCControlApp:
             px, py = cx, cy
 
         self.gcode_lista.append(f"G0 Z{self.Z_SEGURIDAD}\nG0 X0 Y0")
+        
+        # ACTIVA LOS CONTROLES SEGÚN EL ESTADO
+        self.btn_limpiar.config(state=tk.NORMAL)
+        self.actualizar_estado_manual() # Bloquea el manual automáticamente
         if self.conectado: self.btn_iniciar.config(state=tk.NORMAL)
 
     def actualizar_cursor_tiempo_real(self, comando):
@@ -321,6 +350,7 @@ class CNCControlApp:
 
     def iniciar_ruteo(self):
         self.btn_iniciar.config(state=tk.DISABLED)
+        self.btn_limpiar.config(state=tk.DISABLED) # Evitar que lo borre mientras rutea
         self.ruteo_activo = True
         self.actualizar_estado_manual()
         self.txt_coordenadas.delete("1.0", tk.END)
@@ -328,13 +358,11 @@ class CNCControlApp:
 
     def hilo_enviar_gcode(self):
         for cmd in self.gcode_lista:
-            if not self.ruteo_activo: # Permite abortar el ciclo desde STOP
-                break 
+            if not self.ruteo_activo: break 
                 
             self.puerto_serial.write((cmd + '\n').encode('utf-8'))
             self.root.after(0, self.actualizar_cursor_tiempo_real, cmd)
             
-            # Bucle de espera segura para respuesta de GRBL
             while self.ruteo_activo:
                 res = self.puerto_serial.readline().decode('utf-8', errors='ignore').strip()
                 if "ok" in res or "error" in res:
@@ -342,22 +370,23 @@ class CNCControlApp:
         
         self.ruteo_activo = False
         self.root.after(0, lambda: self.btn_iniciar.config(state=tk.NORMAL))
+        self.root.after(0, lambda: self.btn_limpiar.config(state=tk.NORMAL))
         self.root.after(0, self.actualizar_estado_manual)
         
-        if self.ruteo_activo: # Si terminó natural y no por STOP
+        if self.ruteo_activo:
             self.root.after(0, lambda: messagebox.showinfo("Listo", "Grabado de PCB finalizado."))
 
     def detener_ruteo(self):
         if self.conectado:
-            self.ruteo_activo = False # Rompe el hilo de envío
-            self.puerto_serial.write(b'\x18') # Ctrl+X Soft Reset
-            time.sleep(0.5) # Esperar a que GRBL procese el reset
+            self.ruteo_activo = False
+            self.puerto_serial.write(b'\x18')
+            time.sleep(0.5) 
             
-            # Desbloquear alarma causada por reset y levantar herramienta
             self.enviar_comando_grbl("$X", esperar_respuesta=False) 
             self.enviar_comando_grbl("G0 Z10", esperar_respuesta=False) 
             
             self.btn_iniciar.config(state=tk.NORMAL)
+            self.btn_limpiar.config(state=tk.NORMAL)
             self.actualizar_estado_manual()
             messagebox.showwarning("Parada", "¡Emergencia activada! Se ha detenido la máquina.")
 
