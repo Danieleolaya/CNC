@@ -6,12 +6,15 @@ import threading
 import time
 import re
 import os
+import cv2
+import numpy as np
+from tkinter import simpledialog
 
 class CNCControlApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Control CNC PCB - Sistema de Bloqueo de Seguridad")
-        self.root.geometry("1400x750")
+        self.root.geometry("1280x600")
 
         # Variables de estado
         self.puerto_serial = None
@@ -80,6 +83,9 @@ class CNCControlApp:
         tk.Label(panel_control, text="3. ARCHIVO Y RUTEO", font=("Arial", 10, "bold"), bg="#f0f0f0").pack(pady=(15,0))
         self.btn_cargar = tk.Button(panel_control, text="Cargar Gerber", command=self.cargar_gerber)
         self.btn_cargar.pack(pady=5, fill=tk.X)
+
+        self.btn_cargar_img = tk.Button(panel_control, text="Cargar Imagen (PNG/JPG)", command=self.cargar_imagen_a_gcode, bg="#e6e6fa")
+        self.btn_cargar_img.pack(pady=5, fill=tk.X)
 
         # Nuevo botón para desbloquear (limpiar archivo)
         self.btn_limpiar = tk.Button(panel_control, text="Descartar Archivo (Desbloquear Manual)", command=self.limpiar_archivo, state=tk.DISABLED, bg="#ffe6e6")
@@ -217,6 +223,100 @@ class CNCControlApp:
 
         # Aplicar el estado a todo lo que esté dentro de frame_manual
         set_estado_widgets(self.frame_manual)
+
+    def cargar_imagen_a_gcode(self):
+        ruta = filedialog.askopenfilename(filetypes=[("Imágenes", "*.png *.jpg *.jpeg")])
+        if not ruta: return
+
+        # Una imagen no tiene dimensiones físicas. Necesitamos preguntarle al usuario de qué tamaño quiere la placa.
+        ancho_mm = simpledialog.askfloat("Tamaño Físico", "Ingrese el ANCHO deseado de la placa en milímetros (mm):", minvalue=5.0, maxvalue=300.0)
+        if not ancho_mm: return
+
+        self.lbl_archivo.config(text=f"Imagen: {os.path.basename(ruta)}")
+        self.archivo_cargado = True
+        self.gcode_lista.clear()
+        
+        # Limpiar pantallas
+        self.canvas_ref.delete("all")
+        self.canvas_rt.delete("all")
+        self.txt_coordenadas.delete("1.0", tk.END)
+        self.cursor_herramienta = None
+        if hasattr(self, 'pos_p_x'):
+            del self.pos_p_x; del self.pos_p_y
+
+        # --- INICIO DE PROCESAMIENTO OPENCV ---
+        # 1. Leer imagen en escala de grises
+        img = cv2.imread(ruta, cv2.IMREAD_GRAYSCALE)
+        alto_pix, ancho_pix = img.shape
+        
+        # 2. Binarizar: Convertimos a blanco y negro puro. 
+        # Asumimos que las pistas son negras en fondo blanco. THRESH_BINARY_INV hace las pistas blancas para que OpenCV detecte el borde.
+        _, thresh = cv2.threshold(img, 127, 255, cv2.THRESH_BINARY_INV)
+        
+        # 3. Extraer contornos (Aislamiento de pistas)
+        contornos, _ = cv2.findContours(thresh, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+        
+        if not contornos:
+            messagebox.showerror("Error", "No se detectaron pistas en la imagen. Asegúrese de usar imágenes de alto contraste (Blanco y Negro).")
+            self.limpiar_archivo()
+            return
+
+        # Calcular escala (Milímetros por Píxel)
+        escala = ancho_mm / ancho_pix
+        alto_mm = alto_pix * escala
+
+        # Configurar variables de visualización para los Canvas
+        self.root.update_idletasks()
+        ancho_rt, alto_rt = self.canvas_rt.winfo_width(), self.canvas_rt.winfo_height()
+        ancho_ref, alto_ref = self.canvas_ref.winfo_width(), self.canvas_ref.winfo_height()
+
+        self.escala_rt = min((ancho_rt-60)/ancho_mm, (alto_rt-60)/alto_mm)
+        self.offset_x_rt = 30
+        self.offset_y_rt = alto_rt - 30
+
+        self.escala_ref = min((ancho_ref-40)/ancho_mm, (alto_ref-40)/alto_mm)
+        self.offset_x_ref = 20
+        self.offset_y_ref = alto_ref - 20
+
+        # --- GENERACIÓN DE G-CODE ---
+        self.gcode_lista.append(f"G21\nG90\nG0 Z{self.Z_SEGURIDAD}")
+
+        for contorno in contornos:
+            if len(contorno) < 3: continue # Ignorar "basura" visual de 1 o 2 píxeles
+            
+            # Extraer primer punto
+            x_ini = contorno[0][0][0] * escala
+            y_ini = (alto_pix - contorno[0][0][1]) * escala # Invertir eje Y para la CNC
+            
+            # Mover herramienta arriba hacia el inicio de este trazo
+            self.gcode_lista.append(f"G0 X{x_ini:.3f} Y{y_ini:.3f}")
+            self.gcode_lista.append(f"G1 Z{self.Z_GRABADO} F100") # Penetrar material
+            
+            px_ref, py_ref = x_ini, y_ini
+            
+            # Trazar el resto del contorno
+            for punto in contorno[1:]:
+                cx = punto[0][0] * escala
+                cy = (alto_pix - punto[0][1]) * escala
+                self.gcode_lista.append(f"G1 X{cx:.3f} Y{cy:.3f} F{self.F_CORTE}")
+                
+                # Dibujar en Canvas de Referencia
+                x1, y1 = (px_ref*self.escala_ref)+self.offset_x_ref, self.offset_y_ref-(py_ref*self.escala_ref)
+                x2, y2 = (cx*self.escala_ref)+self.offset_x_ref, self.offset_y_ref-(cy*self.escala_ref)
+                self.canvas_ref.create_line(x1, y1, x2, y2, fill="#00FFFF")
+                
+                px_ref, py_ref = cx, cy
+                
+            # Levantar herramienta al terminar la silueta
+            self.gcode_lista.append(f"G0 Z{self.Z_SEGURIDAD}")
+
+        self.gcode_lista.append("G0 X0 Y0") # Volver al origen
+
+        # Actualizar la interfaz
+        self.btn_limpiar.config(state=tk.NORMAL)
+        self.actualizar_estado_manual() # Bloquea el panel manual
+        if self.conectado: self.btn_iniciar.config(state=tk.NORMAL)
+        messagebox.showinfo("Éxito", f"Imagen convertida a trayectorias G-Code.\nTamaño calculado: {ancho_mm:.1f}x{alto_mm:.1f} mm")
 
     def limpiar_archivo(self):
         """Descarga el archivo actual y desbloquea el control manual."""
