@@ -25,7 +25,7 @@ class CNCControlApp:
 
         # Parámetros de Grabado PCB (Eje Z)
         self.Z_SEGURIDAD = 5.0  # Altura para moverse sin tocar la placa
-        self.Z_GRABADO = -0.1   # Profundidad de penetración en el cobre
+        self.Z_GRABADO = 0   # Profundidad de penetración en el cobre
         self.F_CORTE = 150      # Velocidad de avance al grabar
 
         # Variables de visualización
@@ -79,6 +79,8 @@ class CNCControlApp:
         tk.Button(self.frame_manual, text="Cero XY", bg="yellow", width=8, command=self.set_cero_xy).grid(row=1, column=0, pady=5)
         tk.Button(self.frame_manual, text="Cero Z", bg="#ffcc00", width=8, command=self.set_cero_z).grid(row=1, column=1, pady=5)
 
+        tk.Button(self.frame_manual, text="Ir a Inicio (X0 Y0)", bg="#99ccff", width=18, command=self.volver_a_inicio).grid(row=2, column=0, columnspan=2, pady=5)
+        
         # 3. Archivos y Ruteo
         tk.Label(panel_control, text="3. ARCHIVO Y RUTEO", font=("Arial", 10, "bold"), bg="#f0f0f0").pack(pady=(15,0))
         self.btn_cargar = tk.Button(panel_control, text="Cargar Gerber", command=self.cargar_gerber)
@@ -155,7 +157,7 @@ class CNCControlApp:
             self.enviar_comando_grbl("$X")
             self.enviar_comando_grbl("$132=100")
             self.enviar_comando_grbl("$21=0")
-            self.enviar_comando_grbl("G92 X0 Y0 Z0")
+            self.enviar_comando_grbl("G10 P0 L20 X0 Y0 Z0")
 
             self.lbl_estado.config(text=f"Conectado: {puerto} @ {baudios}", fg="green")
             self.btn_conectar.config(state=tk.DISABLED)
@@ -202,13 +204,25 @@ class CNCControlApp:
 
     def set_cero_xy(self):
         if self.conectado:
-            self.enviar_comando_grbl("G92 X0 Y0")
-            messagebox.showinfo("Reset", "Origen XY fijado.")
+            # G10 P0 L20 guarda el cero de trabajo actual de forma segura
+            self.enviar_comando_grbl("G10 P0 L20 X0 Y0")
+            messagebox.showinfo("Reset", "Origen XY fijado permanentemente.")
 
     def set_cero_z(self):
         if self.conectado:
-            self.enviar_comando_grbl("G92 Z0")
+            self.enviar_comando_grbl("G10 P0 L20 Z0")
             messagebox.showinfo("Reset Z", "Punta de herramienta fijada como Z0 (superficie).")
+            
+    def volver_a_inicio(self):
+        if self.conectado:
+            # 1. Poner modo absoluto
+            self.enviar_comando_grbl("G90", esperar_respuesta=False)
+            # 2. Levantar el eje Z a zona segura PRIMERO para no arrastrar la fresa
+            self.enviar_comando_grbl(f"G0 Z{self.Z_SEGURIDAD}", esperar_respuesta=False)
+            # 3. Mover a X0 Y0
+            self.enviar_comando_grbl("G0 X0 Y0", esperar_respuesta=False)
+            # 4. Bajar a Z +0.5 como solicitaste
+            self.enviar_comando_grbl("G0 Z0.5", esperar_respuesta=False)
 
     def actualizar_estado_manual(self):
         # Deshabilita el control si se está grabando O si ya se cargó un archivo
@@ -478,17 +492,25 @@ class CNCControlApp:
 
     def detener_ruteo(self):
         if self.conectado:
-            self.ruteo_activo = False
-            self.puerto_serial.write(b'\x18')
-            time.sleep(0.5) 
+            self.ruteo_activo = False # Rompe el hilo de envío
+            self.puerto_serial.write(b'\x18') # Ctrl+X Soft Reset (Parada seca)
+            time.sleep(0.5) # Esperar a que GRBL procese el reset
             
+            # Desbloquear alarma causada por reset
             self.enviar_comando_grbl("$X", esperar_respuesta=False) 
-            self.enviar_comando_grbl("G0 Z10", esperar_respuesta=False) 
             
+            # --- RUTINA DE RETORNO AL INICIO SEGURO ---
+            self.enviar_comando_grbl("G90", esperar_respuesta=False) # Coordenadas absolutas
+            self.enviar_comando_grbl(f"G0 Z{self.Z_SEGURIDAD}", esperar_respuesta=False) # Levantar Z al máximo seguro
+            self.enviar_comando_grbl("G0 X0 Y0", esperar_respuesta=False) # Regresar al origen XY
+            self.enviar_comando_grbl("G0 Z0.5", esperar_respuesta=False) # Bajar a +0.5mm
+            
+            # Restaurar la interfaz
             self.btn_iniciar.config(state=tk.NORMAL)
             self.btn_limpiar.config(state=tk.NORMAL)
             self.actualizar_estado_manual()
-            messagebox.showwarning("Parada", "¡Emergencia activada! Se ha detenido la máquina.")
+            
+            messagebox.showwarning("Parada de Emergencia", "¡Se ha detenido la máquina!\nRegresando al origen X0 Y0, con Z elevado a +0.5")
 
 if __name__ == "__main__":
     tk_root = tk.Tk()
