@@ -26,6 +26,9 @@ Abre tu terminal (Símbolo del sistema, PowerShell o la terminal de VS Code) y e
 ```bash
 pip install pyserial shapely Pillow
 
+```
+
+
 * **`pyserial`**: Permite la comunicación por puerto USB/COM entre tu computadora y la placa controladora de la CNC.
 * **`shapely`**: Es el "cerebro" matemático del motor CAM. Se usa para crear polígonos, fusionar geometrías y calcular el contorno de aislamiento alrededor de las pistas del Gerber.
 * **`Pillow`** (opcional/si aplica): Librería de procesamiento de imágenes, necesaria si utilizas la función de cargar imágenes JPG/PNG.
