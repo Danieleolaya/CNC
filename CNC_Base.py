@@ -8,11 +8,7 @@ import re
 import os
 import cv2
 import numpy as np
-import time
 from tkinter import simpledialog
-import tkinter as tk
-from tkinter import messagebox
-from shapely.geometry import LineString, Polygon
 
 class CNCControlApp:
     def __init__(self, root):
@@ -26,10 +22,7 @@ class CNCControlApp:
         self.conectado = False
         self.archivo_cargado = False
         self.ruteo_activo = False
-        # Variables para el manejo del Origen (0,0)
-        self.ruta_archivo_actual = None
-        self.origen_x_mm = 0.0
-        self.origen_y_mm = 0.0
+
         # Parámetros de Grabado PCB (Eje Z)
         self.Z_SEGURIDAD = 5.0  # Altura para moverse sin tocar la placa
         self.Z_GRABADO = 0   # Profundidad de penetración en el cobre
@@ -77,7 +70,6 @@ class CNCControlApp:
         tk.Button(frame_xy, text="X-", width=5, command=lambda: self.mover_manual("X", -10)).grid(row=1, column=0)
         tk.Button(frame_xy, text="X+", width=5, command=lambda: self.mover_manual("X", 10)).grid(row=1, column=2)
         tk.Button(frame_xy, text="Y-", width=5, command=lambda: self.mover_manual("Y", -10)).grid(row=2, column=1)
-        
 
         frame_z = tk.Frame(self.frame_manual, bg="#f0f0f0")
         frame_z.grid(row=0, column=1, padx=15)
@@ -89,16 +81,10 @@ class CNCControlApp:
 
         tk.Button(self.frame_manual, text="Ir a Inicio (X0 Y0)", bg="#99ccff", width=18, command=self.volver_a_inicio).grid(row=2, column=0, columnspan=2, pady=5)
         
-        # Cámbialo para que quede así:
-        self.btn_fijar_cero = tk.Button(self.frame_manual, text="Fijar Cero Físico (0,0)", command=self.activar_fijar_origen)
-        
         # 3. Archivos y Ruteo
         tk.Label(panel_control, text="3. ARCHIVO Y RUTEO", font=("Arial", 10, "bold"), bg="#f0f0f0").pack(pady=(15,0))
         self.btn_cargar = tk.Button(panel_control, text="Cargar Gerber", command=self.cargar_gerber)
         self.btn_cargar.pack(pady=5, fill=tk.X)
-
-        self.btn_cam = tk.Button(self.root, text="Configuración CAM (Gerber -> G-Code)", command=self.abrir_menu_cam, bg="lightblue")
-        self.btn_cam.pack(pady=5)
 
         self.btn_cargar_img = tk.Button(panel_control, text="Cargar Imagen (PNG/JPG)", command=self.cargar_imagen_a_gcode, bg="#e6e6fa")
         self.btn_cargar_img.pack(pady=5, fill=tk.X)
@@ -109,14 +95,6 @@ class CNCControlApp:
 
         self.lbl_archivo = tk.Label(panel_control, text="Sin archivo", fg="blue", bg="#f0f0f0")
         self.lbl_archivo.pack()
-        
-        # Cambiamos self.frame_rutas por self.root
-        self.lbl_dimensiones = tk.Label(self.root, text="Tamaño del diseño: Esperando archivo...", fg="blue", font=("Arial", 10, "bold"))
-        self.lbl_dimensiones.pack(pady=5) # Ojo: si los botones de arriba usan .grid() en lugar de .pack(), usa .grid() aquí también.
-
-        # Asegúrate de tener solo esta línea para el tiempo, borra cualquier otra similar
-        self.lbl_tiempo = tk.Label(self.root, text="Tiempo restante: --:--", font=("Arial", 10), fg="purple")
-        self.lbl_tiempo.pack(pady=2) # O usa .grid() dependiendo de cómo la acomodaste
 
         self.btn_iniciar = tk.Button(panel_control, text="Iniciar Grabado PCB", command=self.iniciar_ruteo, bg="lightgreen", state=tk.DISABLED)
         self.btn_iniciar.pack(pady=5, fill=tk.X)
@@ -145,7 +123,6 @@ class CNCControlApp:
         
         self.canvas_ref = tk.Canvas(marco_ref, bg="#1a1a1a", height=250)
         self.canvas_ref.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
-        self.canvas_ref.bind("<Button-1>", self.fijar_nuevo_origen)
 
         marco_coords = tk.Frame(marco_ref)
         marco_coords.pack(side=tk.BOTTOM, fill=tk.X, padx=5, pady=5)
@@ -317,7 +294,6 @@ class CNCControlApp:
 
         # --- GENERACIÓN DE G-CODE ---
         self.gcode_lista.append(f"G21\nG90\nG0 Z{self.Z_SEGURIDAD}")
-        self.calcular_dimensiones_gcode()
 
         for contorno in contornos:
             if len(contorno) < 3: continue # Ignorar "basura" visual de 1 o 2 píxeles
@@ -355,147 +331,6 @@ class CNCControlApp:
         self.actualizar_estado_manual() # Bloquea el panel manual
         if self.conectado: self.btn_iniciar.config(state=tk.NORMAL)
         messagebox.showinfo("Éxito", f"Imagen convertida a trayectorias G-Code.\nTamaño calculado: {ancho_mm:.1f}x{alto_mm:.1f} mm")
-    
-    def calcular_dimensiones_gcode(self):
-            if not self.gcode_lista:
-                self.lbl_dimensiones.config(text="Tamaño del diseño: Archivo vacío")
-                return
-
-            min_x, max_x = float('inf'), float('-inf')
-            min_y, max_y = float('inf'), float('-inf')
-            
-            for linea in self.gcode_lista:
-                # Limpiar comentarios estándar de G-code
-                linea_limpia = linea.upper().split(';')[0].split('(')[0] 
-                
-                # Búsqueda mejorada: Acepta X10, X 10, X:10, X=10, etc.
-                match_x = re.search(r'X[:\s=]*([-0-9.]+)', linea_limpia)
-                match_y = re.search(r'Y[:\s=]*([-0-9.]+)', linea_limpia)
-
-                if match_x:
-                    x_val = float(match_x.group(1))
-                    min_x = min(min_x, x_val)
-                    max_x = max(max_x, x_val)
-                if match_y:
-                    y_val = float(match_y.group(1))
-                    min_y = min(min_y, y_val)
-                    max_y = max(max_y, y_val)
-
-            # Si se encontraron coordenadas válidas
-            if min_x != float('inf'):
-                ancho = max_x - min_x
-                alto = max_y - min_y
-                self.lbl_dimensiones.config(text=f"Tamaño del diseño: Ancho X {ancho:.2f} mm | Alto Y {alto:.2f} mm")
-            else:
-                self.lbl_dimensiones.config(text="Tamaño del diseño: No se detectaron coordenadas XY")
-
-    def generar_gcode_aislado(self, diametro_broca, z_corte, z_seguro, avance):
-            import re
-            from shapely.geometry import LineString
-            from shapely.ops import unary_union
-            
-            # --- 1. LEER EL GERBER EN MEMORIA (Sin dibujarlo) ---
-            divisor = 100000.0  
-            with open(self.ruta_archivo_actual, 'r') as f:
-                lineas = f.readlines()
-
-            pistas_gerber = []
-            pista_actual = []
-            px, py = 0.0, 0.0
-            estado_d = 'D02'
-
-            for l in lineas:
-                if 'D01' in l or 'D1*' in l: estado_d = 'D01'
-                elif 'D02' in l or 'D2*' in l: estado_d = 'D02'
-
-                mx, my = re.search(r'X([\+\-]?\d+)', l), re.search(r'Y([\+\-]?\d+)', l)
-                if not mx and not my: continue
-                
-                cx = float(mx.group(1))/divisor if mx else px
-                cy = float(my.group(1))/divisor if my else py
-
-                if estado_d == 'D01':
-                    if not pista_actual: pista_actual.append((px, py))
-                    pista_actual.append((cx, cy))
-                elif estado_d == 'D02':
-                    if pista_actual:
-                        if len(pista_actual) >= 2: pistas_gerber.append(LineString(pista_actual))
-                        pista_actual = []
-                px, py = cx, cy
-
-            if pista_actual and len(pista_actual) >= 2:
-                pistas_gerber.append(LineString(pista_actual))
-
-            # --- 2. CALCULAR RUTAS DE AISLAMIENTO (SHAPELY) ---
-            radio_broca = diametro_broca / 2.0
-            poligonos_aislados = [pista.buffer(radio_broca, join_style=2) for pista in pistas_gerber]
-            geometria_final = unary_union(poligonos_aislados)
-
-            # --- 3. GENERAR EL G-CODE PURO ---
-            self.gcode_lista.clear()
-            self.gcode_lista.append(f"G21\nG90\nG0 Z{z_seguro}")
-
-            fronteras = []
-            if geometria_final.geom_type == 'Polygon':
-                polys = [geometria_final]
-            elif geometria_final.geom_type == 'MultiPolygon':
-                polys = list(geometria_final.geoms)
-            else:
-                polys = []
-
-            for poly in polys:
-                fronteras.append(poly.exterior)
-                for interior in poly.interiors: fronteras.append(interior)
-
-            for frontera in fronteras:
-                coords = list(frontera.coords)
-                if not coords: continue
-                
-                # Movimiento aéreo al inicio del polígono
-                inicio_x, inicio_y = coords[0]
-                self.gcode_lista.append(f"G0 X{inicio_x:.3f} Y{inicio_y:.3f}")
-                # Bajar broca
-                self.gcode_lista.append(f"G1 Z{z_corte} F100") 
-                # Cortar contorno
-                for x, y in coords[1:]:
-                    self.gcode_lista.append(f"G1 X{x:.3f} Y{y:.3f} F{avance}")
-                # Subir broca al terminar el polígono
-                self.gcode_lista.append(f"G0 Z{z_seguro}") 
-
-            self.gcode_lista.append(f"G0 X0 Y0")
-            
-            # Guardar copia pura para cuando el usuario fije el Origen (0,0) manual
-            self.gcode_lista_original = list(self.gcode_lista) 
-
-            # --- 4. VISUALIZADOR ESTRICTO DE G-CODE (Adiós a las líneas del Gerber y del Eje Z) ---
-            self.canvas_ref.delete("all") # Borramos el Gerber original de la pantalla
-            
-            sim_x, sim_y = 0.0, 0.0
-            sim_z = z_seguro # Empezamos con la broca arriba
-            
-            for comando in self.gcode_lista:
-                mx = re.search(r'X([\+\-]?\d+\.?\d*)', comando)
-                my = re.search(r'Y([\+\-]?\d+\.?\d*)', comando)
-                mz = re.search(r'Z([\+\-]?\d+\.?\d*)', comando)
-                
-                nx = float(mx.group(1)) if mx else sim_x
-                ny = float(my.group(1)) if my else sim_y
-                nz = float(mz.group(1)) if mz else sim_z
-                
-                # REGLA ESTRICTA: SOLO dibujamos si es un corte (G1) Y la broca está abajo (<= z_corte)
-                if comando.startswith("G1") and nz <= z_corte:
-                    px_tk = (sim_x * self.escala_ref) + self.offset_x_ref
-                    py_tk = self.offset_y_ref - (sim_y * self.escala_ref)
-                    nx_tk = (nx * self.escala_ref) + self.offset_x_ref
-                    ny_tk = self.offset_y_ref - (ny * self.escala_ref)
-                    
-                    # Dibujar ruta en color Cian
-                    self.canvas_ref.create_line(px_tk, py_tk, nx_tk, ny_tk, fill="#00FFFF", width=1) 
-                    
-                sim_x, sim_y, sim_z = nx, ny, nz
-
-            messagebox.showinfo("CAM Listo", "G-Code generado. El visualizador ahora muestra SOLO las rutas de corte. Puedes fijar tu Punto 0 físico.")
-
 
     def limpiar_archivo(self):
         """Descarga el archivo actual y desbloquea el control manual."""
@@ -514,43 +349,37 @@ class CNCControlApp:
         self.btn_limpiar.config(state=tk.DISABLED)
         self.actualizar_estado_manual()
 
-    def cargar_gerber(self, ruta_provista=None):
-        # Si no se provee ruta, es porque estamos cargando un archivo nuevo desde cero
-        if ruta_provista is None:
-            ruta = filedialog.askopenfilename(filetypes=[("Gerber", "*.gbr *.gtl *.gbl")])
-            if not ruta: return
-            self.ruta_archivo_actual = ruta
-            self.origen_x_mm = 0.0  # Resetear el origen a 0 al cargar archivo nuevo
-            self.origen_y_mm = 0.0
-        else:
-            ruta = ruta_provista # Usamos la guardada si solo estamos recalculando el origen
+    def cargar_gerber(self):
+        ruta = filedialog.askopenfilename(filetypes=[("Gerber", "*.gbr *.gtl *.gbl")])
+        if not ruta: return
 
         self.lbl_archivo.config(text=os.path.basename(ruta))
         self.archivo_cargado = True
         self.gcode_lista.clear()
         
+        # Limpiar pantallas
         self.canvas_ref.delete("all")
         self.canvas_rt.delete("all")
         self.txt_coordenadas.delete("1.0", tk.END)
         self.cursor_herramienta = None
         if hasattr(self, 'pos_p_x'):
-            del self.pos_p_x; del self.pos_p_y
+            del self.pos_p_x
+            del self.pos_p_y
 
         with open(ruta, 'r') as f:
             lineas = f.readlines()
 
-        divisor = 100000.0  # Divisor corregido para la escala real
+        divisor = 10000.0
         coords = []
         for l in lineas:
             mx, my = re.search(r'X([\+\-]?\d+)', l), re.search(r'Y([\+\-]?\d+)', l)
             if mx or my:
-                # APLICAMOS LA RESTA DEL ORIGEN AQUÍ
-                vx = (float(mx.group(1))/divisor if mx else 0) - self.origen_x_mm
-                vy = (float(my.group(1))/divisor if my else 0) - self.origen_y_mm
+                vx = float(mx.group(1))/divisor if mx else 0
+                vy = float(my.group(1))/divisor if my else 0
                 coords.append((vx, vy))
 
         if not coords:
-            messagebox.showerror("Error", "El archivo Gerber no contiene coordenadas.")
+            messagebox.showerror("Error", "El archivo Gerber no contiene coordenadas válidas de trazado.")
             self.archivo_cargado = False
             return
 
@@ -570,7 +399,7 @@ class CNCControlApp:
         self.offset_x_ref = 20 - (min_x * self.escala_ref)
         self.offset_y_ref = alto_ref - 20 + (min_y * self.escala_ref)
 
-        self.gcode_lista.append(f"G21\nG90\nG0 Z{self.Z_SEGURIDAD}\nG0 X0 Y0")
+        self.gcode_lista.append(f"G21\nG90\nG0 Z{self.Z_SEGURIDAD}")
         
         px, py = 0.0, 0.0
         herramienta_abajo = False
@@ -579,16 +408,8 @@ class CNCControlApp:
             mx, my = re.search(r'X([\+\-]?\d+)', l), re.search(r'Y([\+\-]?\d+)', l)
             if not mx and not my: continue
             
-            # Cálculo exacto con el origen modificado
-            if mx:
-                cx = (float(mx.group(1)) / divisor) - self.origen_x_mm
-            else:
-                cx = px
-                
-            if my:
-                cy = (float(my.group(1)) / divisor) - self.origen_y_mm
-            else:
-                cy = py
+            cx = float(mx.group(1))/divisor if mx else px
+            cy = float(my.group(1))/divisor if my else py
 
             if 'D01' in l or 'D1*' in l:
                 if not herramienta_abajo:
@@ -610,155 +431,10 @@ class CNCControlApp:
 
         self.gcode_lista.append(f"G0 Z{self.Z_SEGURIDAD}\nG0 X0 Y0")
         
-        # --- DIBUJAR MARCADOR VISUAL DE ORIGEN (CRUZ ROJA) ---
-        origen_px = (0.0 * self.escala_ref) + self.offset_x_ref
-        origen_py = self.offset_y_ref - (0.0 * self.escala_ref)
-        
-        self.canvas_ref.create_line(origen_px-15, origen_py, origen_px+15, origen_py, fill="red", width=2)
-        self.canvas_ref.create_line(origen_px, origen_py-15, origen_px, origen_py+15, fill="red", width=2)
-        self.canvas_ref.create_oval(origen_px-4, origen_py-4, origen_px+4, origen_py+4, fill="red")
-        self.canvas_ref.create_text(origen_px+25, origen_py-15, text="Origen (0,0)", fill="red", font=("Arial", 9, "bold"))
-        # -----------------------------------------------------
-
-        if hasattr(self, 'lbl_dimensiones'):
-            self.lbl_dimensiones.config(text=f"Tamaño del diseño: Ancho X {rx:.2f} mm | Alto Y {ry:.2f} mm")
-        if hasattr(self, 'lbl_tiempo'):
-            self.lbl_tiempo.config(text="Tiempo restante: Calculando al iniciar...")
-        
+        # ACTIVA LOS CONTROLES SEGÚN EL ESTADO
         self.btn_limpiar.config(state=tk.NORMAL)
-        self.actualizar_estado_manual() 
+        self.actualizar_estado_manual() # Bloquea el manual automáticamente
         if self.conectado: self.btn_iniciar.config(state=tk.NORMAL)
-
-    def abrir_menu_cam(self):
-        if not self.ruta_archivo_actual:
-            messagebox.showwarning("Advertencia", "Primero carga un archivo Gerber.")
-            return
-
-        cam_win = tk.Toplevel(self.root)
-        cam_win.title("Generador de Rutas (CAM)")
-        cam_win.geometry("300x300")
-
-        tk.Label(cam_win, text="Parámetros de Aislamiento", font=("Arial", 12, "bold")).pack(pady=10)
-
-        # 1. Diámetro de la broca
-        tk.Label(cam_win, text="Grosor de la broca (mm):").pack()
-        self.entry_broca = tk.Entry(cam_win)
-        self.entry_broca.insert(0, "0.2")
-        self.entry_broca.pack()
-
-        # 2. Profundidad de corte Z
-        tk.Label(cam_win, text="Profundidad de corte Z (mm):").pack()
-        self.entry_z_corte = tk.Entry(cam_win)
-        self.entry_z_corte.insert(0, "-0.1")
-        self.entry_z_corte.pack()
-
-        # 3. Z de Seguridad
-        tk.Label(cam_win, text="Z de viaje/seguridad (mm):").pack()
-        self.entry_z_seguro = tk.Entry(cam_win)
-        self.entry_z_seguro.insert(0, "2.0")
-        self.entry_z_seguro.pack()
-
-        # 4. Velocidad
-        tk.Label(cam_win, text="Velocidad de corte (mm/min):").pack()
-        self.entry_avance = tk.Entry(cam_win)
-        self.entry_avance.insert(0, "150")
-        self.entry_avance.pack()
-
-        btn_generar = tk.Button(cam_win, text="Generar G-Code y Visualizar", bg="lightgreen", 
-                                command=lambda: self.procesar_aislamiento(cam_win))
-        btn_generar.pack(pady=20)
-
-    def procesar_aislamiento(self, ventana):
-        try:
-            diametro = float(self.entry_broca.get())
-            z_corte = float(self.entry_z_corte.get())
-            z_seguro = float(self.entry_z_seguro.get())
-            avance = int(self.entry_avance.get())
-        except ValueError:
-            messagebox.showerror("Error", "Ingresa valores numéricos válidos.")
-            return
-
-        ventana.destroy()
-        
-        # Aquí llamamos a la función matemática pesada
-        self.generar_gcode_aislado(diametro, z_corte, z_seguro, avance)
-
-
-    def fijar_nuevo_origen(self, event):
-        if not self.archivo_cargado or not self.ruta_archivo_actual:
-            return
-            
-        # Calcular en qué coordenada (mm) del diseño actual hizo clic el usuario
-        clic_x_mm = (event.x - self.offset_x_ref) / self.escala_ref
-        clic_y_mm = (self.offset_y_ref - event.y) / self.escala_ref
-        
-        # Acumular el desplazamiento
-        self.origen_x_mm += clic_x_mm
-        self.origen_y_mm += clic_y_mm
-        
-        # Recargar el archivo automáticamente para generar el nuevo G-code
-        self.cargar_gerber(ruta_provista=self.ruta_archivo_actual)
-
-    def fijar_cero_maquina(self):
-        if self.conectado:
-            # G92 le dice a GRBL: "Establece tu posición actual como X=0, Y=0, Z=0"
-            self.puerto_serial.write(b"G92 X0 Y0 Z0\n")
-            
-            # Borramos la pantalla de coordenadas manuales y la reiniciamos a 0
-            self.txt_coordenadas.delete("1.0", tk.END)
-            self.txt_coordenadas.insert(tk.END, "Origen físico fijado en X0 Y0 Z0\n")
-            messagebox.showinfo("Origen Fijado", "La máquina arrancará desde esta posición física.")
-            
-    def activar_fijar_origen(self):
-        if not hasattr(self, 'gcode_lista_original') or not self.gcode_lista_original:
-            messagebox.showwarning("Advertencia", "Primero debes cargar el Gerber y configurar el CAM.")
-            return
-        
-        # Preparamos el canvas para recibir el clic
-        self.canvas_ref.bind("<Button-1>", self.fijar_nuevo_origen_gcode)
-        self.canvas_ref.config(cursor="crosshair")
-        messagebox.showinfo("Fijar Origen", "Haz clic en el visualizador para colocar la cruz roja (Punto 0,0).")
-
-    def fijar_nuevo_origen_gcode(self, event):
-        # Borrar cruz anterior si existe
-        self.canvas_ref.delete("cruz_origen")
-        
-        # Dibujar la cruz roja y el texto en el canvas
-        r = 6
-        self.canvas_ref.create_line(event.x - r, event.y, event.x + r, event.y, fill="red", width=2, tags="cruz_origen")
-        self.canvas_ref.create_line(event.x, event.y - r, event.x, event.y + r, fill="red", width=2, tags="cruz_origen")
-        self.canvas_ref.create_text(event.x + 10, event.y + 10, text="Origen (0,0)", fill="red", font=("Arial", 10, "bold"), tags="cruz_origen", anchor="w")
-        
-        # Calcular a cuántos milímetros equivale ese clic en el mundo real
-        origen_x_mm = (event.x - self.offset_x_ref) / self.escala_ref
-        origen_y_mm = (self.offset_y_ref - event.y) / self.escala_ref
-        
-        # Reescribir todo el G-Code desplazando X e Y
-        self.gcode_lista.clear()
-        import re
-        
-        for linea in self.gcode_lista_original:
-            if linea.startswith("G0") or linea.startswith("G1"):
-                nueva_linea = linea
-                # Buscar las coordenadas en la línea
-                mx = re.search(r'X([\+\-]?\d+\.?\d*)', linea)
-                my = re.search(r'Y([\+\-]?\d+\.?\d*)', linea)
-                
-                # Restar el origen a las coordenadas para desplazarlas
-                if mx:
-                    nx = float(mx.group(1)) - origen_x_mm
-                    nueva_linea = nueva_linea.replace(f"X{mx.group(1)}", f"X{nx:.3f}")
-                if my:
-                    ny = float(my.group(1)) - origen_y_mm
-                    nueva_linea = nueva_linea.replace(f"Y{my.group(1)}", f"Y{ny:.3f}")
-                    
-                self.gcode_lista.append(nueva_linea)
-            else:
-                self.gcode_lista.append(linea)
-
-        # Restaurar el ratón a la normalidad
-        self.canvas_ref.config(cursor="")
-        self.canvas_ref.unbind("<Button-1>")
 
     def actualizar_cursor_tiempo_real(self, comando):
         mx = re.search(r'X([\+\-]?\d+\.?\d*)', comando)
@@ -795,17 +471,8 @@ class CNCControlApp:
         threading.Thread(target=self.hilo_enviar_gcode, daemon=True).start()
 
     def hilo_enviar_gcode(self):
-        total_lineas = len(self.gcode_lista)
-        if total_lineas == 0:
-            return
-
-        tiempo_inicio = time.time()
-        completado_con_exito = True # Para saber si terminó solo o si le diste a STOP
-
-        for indice, cmd in enumerate(self.gcode_lista):
-            if not self.ruteo_activo: 
-                completado_con_exito = False
-                break 
+        for cmd in self.gcode_lista:
+            if not self.ruteo_activo: break 
                 
             self.puerto_serial.write((cmd + '\n').encode('utf-8'))
             self.root.after(0, self.actualizar_cursor_tiempo_real, cmd)
@@ -814,35 +481,15 @@ class CNCControlApp:
                 res = self.puerto_serial.readline().decode('utf-8', errors='ignore').strip()
                 if "ok" in res or "error" in res:
                     break
-            
-            # --- NUEVO: CÁLCULO DE TIEMPO EN TIEMPO REAL ---
-            lineas_procesadas = indice + 1
-            porcentaje = lineas_procesadas / total_lineas
-            
-            tiempo_transcurrido = time.time() - tiempo_inicio
-            
-            if porcentaje > 0: # Evitar división por cero en la primera línea
-                tiempo_total_estimado = tiempo_transcurrido / porcentaje
-                tiempo_restante = tiempo_total_estimado - tiempo_transcurrido
-                
-                # Convertir a minutos y segundos
-                m, s = divmod(int(tiempo_restante), 60)
-                
-                # Actualizar la interfaz gráfica de forma segura
-                self.root.after(0, lambda m=m, s=s: self.lbl_tiempo.config(text=f"Tiempo restante: {m:02d}:{s:02d}"))
         
-        # --- FINALIZACIÓN DEL RUTEO ---
         self.ruteo_activo = False
         self.root.after(0, lambda: self.btn_iniciar.config(state=tk.NORMAL))
         self.root.after(0, lambda: self.btn_limpiar.config(state=tk.NORMAL))
         self.root.after(0, self.actualizar_estado_manual)
         
-        # Mostrar el mensaje correcto según cómo terminó
-        if completado_con_exito:
-            self.root.after(0, lambda: self.lbl_tiempo.config(text="Tiempo estimado: ¡Terminado!"))
+        if self.ruteo_activo:
             self.root.after(0, lambda: messagebox.showinfo("Listo", "Grabado de PCB finalizado."))
-        else:
-            self.root.after(0, lambda: self.lbl_tiempo.config(text="Tiempo estimado: Cancelado por el usuario"))
+
     def detener_ruteo(self):
         if self.conectado:
             self.ruteo_activo = False # Rompe el hilo de envío
