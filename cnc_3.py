@@ -99,8 +99,8 @@ class CNCControlApp:
         self.btn_cam = tk.Button(panel_control, text="2. Configuración CAM", command=self.abrir_menu_cam, state=tk.DISABLED, bg="#d9ead3")
         self.btn_cam.pack(pady=2, fill=tk.X)
 
-        self.btn_origen = tk.Button(panel_control, text="3. Fijar Cero Físico (0,0)", command=self.activar_fijar_origen, state=tk.DISABLED, bg="#fce5cd")
-        self.btn_origen.pack(pady=2, fill=tk.X)
+      #  self.btn_origen = tk.Button(panel_control, text="3. Fijar Cero Físico (0,0)", command=self.activar_fijar_origen, state=tk.DISABLED, bg="#fce5cd")
+       # self.btn_origen.pack(pady=2, fill=tk.X)
 
         self.btn_cargar_img = tk.Button(panel_control, text="Cargar Imagen (PNG/JPG)", command=self.cargar_imagen_a_gcode, bg="#e6e6fa")
         self.btn_cargar_img.pack(pady=2, fill=tk.X)
@@ -312,7 +312,10 @@ class CNCControlApp:
                         # 1. Dibujamos en el canvas
                         x1, y1 = (px*self.escala_ref)+self.offset_x_ref, self.offset_y_ref-(py*self.escala_ref)
                         x2, y2 = (cx*self.escala_ref)+self.offset_x_ref, self.offset_y_ref-(cy*self.escala_ref)
-                        self.canvas_ref.create_line(x1, y1, x2, y2, fill="cyan")
+                        
+                        # ¡AQUÍ ESTÁ EL CAMBIO! Agregamos tags="diseno_cyan"
+                        self.canvas_ref.create_line(x1, y1, x2, y2, fill="cyan", tags="diseno_cyan")
+                        
                         # 2. NUEVO: Guardamos la coordenada en nuestra ruta matemática
                         if not trazo_actual:
                             trazo_actual.append((px, py))
@@ -339,7 +342,6 @@ class CNCControlApp:
         
         self.canvas_ref.bind("<Button-1>", self.fijar_origen_clic)
         messagebox.showinfo("Gerber Cargado", "1. Archivo leído correctamente.\n\nAHORA DEBES hacer clic en '2. Configuración CAM' para generar las rutas de la broca.")
-
 
     
     def abrir_menu_cam(self):
@@ -413,72 +415,81 @@ class CNCControlApp:
         print(f"Nuevo origen fijado en X: {self.pos_p_x:.3f}, Y: {self.pos_p_y:.3f}")
 
     def generar_gcode_aislamiento(self, diametro_broca, z_corte, z_seguro, feedrate):
-            ancho_pista = 0.5   
-            offset = (ancho_pista / 2.0) + (diametro_broca / 2.0)
+        ancho_pista = 0.5   
+        offset = (ancho_pista / 2.0) + (diametro_broca / 2.0)
 
-            # Rescatamos las coordenadas de tu clic (Si no has hecho clic, asume 0.0)
-            origen_x = self.pos_p_x if self.pos_p_x is not None else 0.0
-            origen_y = self.pos_p_y if self.pos_p_y is not None else 0.0
+        # --- SISTEMA DE BLOQUEO Y CERO AUTOMÁTICO ---
+        # Si olvidaste hacer clic para fijar la cruz roja, buscamos la 
+        # esquina inferior izquierda absoluta del diseño por seguridad.
+        if self.pos_p_x is None or self.pos_p_y is None:
+            todos_x = [pt[0] for trazo in self.coords_crudas for pt in trazo]
+            todos_y = [pt[1] for trazo in self.coords_crudas for pt in trazo]
+            if todos_x and todos_y:
+                self.pos_p_x = min(todos_x)
+                self.pos_p_y = min(todos_y)
+            else:
+                self.pos_p_x, self.pos_p_y = 0.0, 0.0
 
-            lineas_shapely = []
-            for trazo in self.coords_crudas:
-                if len(trazo) >= 2:
-                    # Restamos tu origen manual para que el G-Code sepa que ahí es el 0,0
-                    trazo_desplazado = [(x - origen_x, y - origen_y) for x, y in trazo]
-                    lineas_shapely.append(LineString(trazo_desplazado))
+        origen_x = self.pos_p_x
+        origen_y = self.pos_p_y
 
-            if not lineas_shapely:
-                return
+        lineas_shapely = []
+        for trazo in self.coords_crudas:
+            if len(trazo) >= 2:
+                # Restamos tu origen manual para que el G-Code sepa que ahí es el 0,0 real
+                trazo_desplazado = [(x - origen_x, y - origen_y) for x, y in trazo]
+                lineas_shapely.append(LineString(trazo_desplazado))
 
-            # 3. La Magia de Shapely
-            multi_lineas = unary_union(lineas_shapely)
-        # ... (De aquí en adelante el resto queda igual) ...
+        if not lineas_shapely:
+            return
 
-            # 3. La Magia de Shapely: Crear el contorno de aislamiento
-            # Esto engorda las líneas y luego une todo para sacar solo los bordes externos
-            multi_lineas = unary_union(lineas_shapely)
-            poligonos_engordados = multi_lineas.buffer(offset, cap_style=2, join_style=2)
-            
-            # Extraemos solo las fronteras (donde va a pasar la broca)
-            rutas_corte = []
-            if poligonos_engordados.geom_type == 'Polygon':
-                rutas_corte.append(list(poligonos_engordados.exterior.coords))
-                for interior in poligonos_engordados.interiors:
-                    rutas_corte.append(list(interior.coords))
-            elif poligonos_engordados.geom_type == 'MultiPolygon':
-                for poly in poligonos_engordados.geoms:
-                    rutas_corte.append(list(poly.exterior.coords))
-                    for interior in poly.interiors:
-                        rutas_corte.append(list(interior.coords))
-
-            # 4. Generar el G-Code final con control del Eje Z
-            self.gcode_lista = []
-            self.gcode_lista.append("G21 ; Unidades en milimetros")
-            self.gcode_lista.append("G90 ; Posicionamiento absoluto")
-            self.gcode_lista.append(f"G0 Z{z_seguro} ; Subir Z a altura segura")
+        # 3. La Magia de Shapely: Crear el contorno de aislamiento
+        multi_lineas = unary_union(lineas_shapely)
+        poligonos_engordados = multi_lineas.buffer(offset, cap_style=2, join_style=2)
         
-            for ruta in rutas_corte:
-                # Movimiento de viaje (Travel): Moverse al inicio de la pista por el aire
-                x_ini, y_ini = ruta[0]
-                self.gcode_lista.append(f"G0 X{x_ini:.3f} Y{y_ini:.3f} ; Viaje rapido")
+        # Extraemos solo las fronteras (donde va a pasar la broca)
+        rutas_corte = []
+        if poligonos_engordados.geom_type == 'Polygon':
+            rutas_corte.append(list(poligonos_engordados.exterior.coords))
+            for interior in poligonos_engordados.interiors:
+                rutas_corte.append(list(interior.coords))
+        elif poligonos_engordados.geom_type == 'MultiPolygon':
+            for poly in poligonos_engordados.geoms:
+                rutas_corte.append(list(poly.exterior.coords))
+                for interior in poly.interiors:
+                    rutas_corte.append(list(interior.coords))
+
+        # 4. Generar el G-Code final con control del Eje Z
+        self.gcode_lista = []
+        self.gcode_lista.append("G21 ; Unidades en milimetros")
+        self.gcode_lista.append("G90 ; Posicionamiento absoluto")
+        self.gcode_lista.append(f"G0 Z{z_seguro} ; Subir Z a altura segura")
+    
+        for ruta in rutas_corte:
+            # Movimiento de viaje (Travel): Moverse al inicio de la pista por el aire
+            x_ini, y_ini = ruta[0]
+            self.gcode_lista.append(f"G0 X{x_ini:.3f} Y{y_ini:.3f} ; Viaje rapido")
+            
+            # Bajar la broca para cortar
+            self.gcode_lista.append(f"G1 Z{z_corte:.3f} F{feedrate/2} ; Penetrar material")
+            
+            # Recorrer el borde aislando la pista
+            for x, y in ruta[1:]:
+                self.gcode_lista.append(f"G1 X{x:.3f} Y{y:.3f} F{feedrate} ; Cortando")
                 
-                # Bajar la broca para cortar
-                self.gcode_lista.append(f"G1 Z{z_corte:.3f} F{feedrate/2} ; Penetrar material")
-                
-                # Recorrer el borde aislando la pista
-                for x, y in ruta[1:]:
-                    self.gcode_lista.append(f"G1 X{x:.3f} Y{y:.3f} F{feedrate} ; Cortando")
-                    
-                # Al terminar el bucle de esa pista, levantar la broca
-                self.gcode_lista.append(f"G0 Z{z_seguro} ; Levantar broca")
+            # Al terminar el bucle de esa pista, levantar la broca
+            self.gcode_lista.append(f"G0 Z{z_seguro} ; Levantar broca")
 
-            self.gcode_lista.append("G0 X0 Y0 ; Volver a origen")
-            self.gcode_lista.append("M30 ; Fin del programa")
+        self.gcode_lista.append("G0 X0 Y0 ; Volver a origen")
+        self.gcode_lista.append("M30 ; Fin del programa")
 
-            # Aquí mandarías a redibujar el canvas pero usando self.gcode_lista
-            self.dibujar_rutas_gcode_en_canvas()
+        # Aquí mandamos a redibujar el canvas usando el G-Code seguro
+        self.dibujar_rutas_gcode_en_canvas()
 
+        
     def dibujar_rutas_gcode_en_canvas(self):
+        # Borrar el diseño cyan original
+        self.canvas_ref.delete("diseno_cyan")
         self.canvas_ref.delete("rutas_verdes")
         self.canvas_rt.delete("all")
         if not hasattr(self, 'escala_ref'): return
