@@ -1,5 +1,6 @@
 import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext
+from tkinter import ttk
 import serial
 import serial.tools.list_ports
 import threading
@@ -9,13 +10,15 @@ import os
 import cv2
 import numpy as np
 from tkinter import simpledialog
+import math
+import re
 from shapely.geometry import LineString
 from shapely.ops import unary_union
 import tkinter.messagebox as messagebox
 
 # Nuevas importaciones para la matemática del CAM
-from shapely.geometry import LineString, Polygon
-from shapely.ops import unary_union
+#from shapely.geometry import LineString, Polygon
+#from shapely.ops import unary_union
 
 class CNCControlApp:
     def __init__(self, root):
@@ -345,39 +348,101 @@ class CNCControlApp:
 
     
     def abrir_menu_cam(self):
-        if not self.ruta_archivo_actual:
-            messagebox.showwarning("Advertencia", "Primero carga un archivo Gerber.")
-            return
+        # Creamos una ventana emergente para la configuración
+        ventana_cam = tk.Toplevel(self.root)
+        ventana_cam.title("Configuración CAM - Herramienta de Corte")
+        ventana_cam.geometry("350x450")
+        ventana_cam.grab_set() # Bloquea la ventana principal hasta que se cierre esta
 
-        cam_win = tk.Toplevel(self.root)
-        cam_win.title("Generador de Rutas (CAM)")
-        cam_win.geometry("300x300")
+        tk.Label(ventana_cam, text="Ajustes de Generación de G-Code", font=("Arial", 12, "bold")).pack(pady=10)
 
-        tk.Label(cam_win, text="Parámetros de Aislamiento", font=("Arial", 12, "bold")).pack(pady=10)
+        # --- 1. TIPO DE HERRAMIENTA ---
+        tk.Label(ventana_cam, text="Tipo de Broca / Fresa:", font=("Arial", 9, "bold")).pack(pady=(5,0))
+        self.var_tipo_broca = tk.StringVar(value="cilindrica")
+        combo_broca = ttk.Combobox(ventana_cam, textvariable=self.var_tipo_broca, state="readonly")
+        combo_broca['values'] = ("cilindrica", "v-bit")
+        combo_broca.pack()
 
-        tk.Label(cam_win, text="Grosor de la broca (mm):").pack()
-        self.entry_broca = tk.Entry(cam_win)
-        self.entry_broca.insert(0, "0.2")
-        self.entry_broca.pack()
+        # --- 2. DIÁMETRO ---
+        tk.Label(ventana_cam, text="Diámetro / Punta (mm):").pack(pady=(10,0))
+        self.entry_diametro = tk.Entry(ventana_cam, justify="center")
+        self.entry_diametro.insert(0, "0.5") # Valor por defecto
+        self.entry_diametro.pack()
 
-        tk.Label(cam_win, text="Profundidad de corte Z (mm):").pack()
-        self.entry_z_corte = tk.Entry(cam_win)
-        self.entry_z_corte.insert(0, str(self.Z_GRABADO))
+        # --- 3. ÁNGULO (Para V-Bit) ---
+        tk.Label(ventana_cam, text="Ángulo (Solo para V-Bit en grados):").pack(pady=(10,0))
+        self.entry_angulo = tk.Entry(ventana_cam, justify="center")
+        self.entry_angulo.insert(0, "30") # Valor por defecto
+        self.entry_angulo.pack()
+
+        # --- 4. PARÁMETROS Z Y AVANCE ---
+        tk.Label(ventana_cam, text="Profundidad de Corte Z (mm) [Ej. -0.1]:").pack(pady=(10,0))
+        self.entry_z_corte = tk.Entry(ventana_cam, justify="center")
+        self.entry_z_corte.insert(0, "-0.1")
         self.entry_z_corte.pack()
 
-        tk.Label(cam_win, text="Z de viaje/seguridad (mm):").pack()
-        self.entry_z_seguro = tk.Entry(cam_win)
-        self.entry_z_seguro.insert(0, str(self.Z_SEGURIDAD))
+        tk.Label(ventana_cam, text="Altura Segura Z (mm):").pack(pady=(10,0))
+        self.entry_z_seguro = tk.Entry(ventana_cam, justify="center")
+        self.entry_z_seguro.insert(0, "2.0")
         self.entry_z_seguro.pack()
 
-        tk.Label(cam_win, text="Velocidad de corte (mm/min):").pack()
-        self.entry_avance = tk.Entry(cam_win)
-        self.entry_avance.insert(0, str(self.F_CORTE))
-        self.entry_avance.pack()
+        tk.Label(ventana_cam, text="Velocidad de Avance XY (Feedrate):").pack(pady=(10,0))
+        self.entry_feedrate = tk.Entry(ventana_cam, justify="center")
+        self.entry_feedrate.insert(0, "150")
+        self.entry_feedrate.pack()
 
-        btn_generar = tk.Button(cam_win, text="Generar G-Code y Visualizar", bg="lightgreen", 
-                                command=lambda: self.procesar_aislamiento(cam_win))
+        # --- BOTÓN PARA PROCESAR ---
+        btn_generar = tk.Button(ventana_cam, text="Generar Trayectorias", bg="lightgreen", font=("Arial", 10, "bold"),
+                                command=lambda: self.procesar_cam_desde_interfaz(ventana_cam))
         btn_generar.pack(pady=20)
+
+    def procesar_cam_desde_interfaz(self, ventana):
+        try:
+            # Leer valores de la ventana
+            tipo_broca = self.var_tipo_broca.get()
+            diametro = float(self.entry_diametro.get())
+            z_corte = float(self.entry_z_corte.get())
+            z_seguro = float(self.entry_z_seguro.get())
+            feedrate = float(self.entry_feedrate.get())
+            
+            # Condicionar el ángulo
+            if tipo_broca == "v-bit":
+                angulo = float(self.entry_angulo.get())
+            else:
+                angulo = 0.0
+
+            # Llamar a la función matemática que ya arreglamos antes
+            self.generar_gcode_aislamiento(tipo_broca, diametro, angulo, z_corte, z_seguro, feedrate)
+            
+            # Cerrar la ventana tras generar con éxito
+            ventana.destroy()
+            messagebox.showinfo("Éxito", "G-Code de aislamiento generado correctamente en el monitor.")
+
+        except ValueError:
+            messagebox.showerror("Error", "Por favor ingresa solo números válidos en las casillas.")
+
+    def funcion_boton_generar_cam(self):
+        try:
+            # Leer valores que ya tenías
+            diametro = float(self.entry_diametro.get())
+            z_corte = float(self.entry_z_corte.get())
+            z_seguro = float(self.entry_z_seguro.get())
+            feedrate = float(self.entry_feedrate.get())
+            
+            # --- NUEVO: Leer tipo y ángulo ---
+            tipo_broca = self.var_tipo_broca.get()
+            
+            # Validar el ángulo (si es cilíndrica, da igual, mandamos 0)
+            if tipo_broca == "v-bit":
+                angulo = float(self.entry_angulo.get())
+            else:
+                angulo = 0.0
+
+            # Llamar a la función matemática actualizada
+            self.generar_gcode_aislamiento(tipo_broca, diametro, angulo, z_corte, z_seguro, feedrate)
+            
+        except ValueError:
+            print("Error: Por favor ingresa solo números en las casillas de configuración.")
 
     def procesar_aislamiento(self, ventana):
         try:
@@ -414,79 +479,93 @@ class CNCControlApp:
 
         print(f"Nuevo origen fijado en X: {self.pos_p_x:.3f}, Y: {self.pos_p_y:.3f}")
 
-    def generar_gcode_aislamiento(self, diametro_broca, z_corte, z_seguro, feedrate):
-        ancho_pista = 0.5   
-        offset = (ancho_pista / 2.0) + (diametro_broca / 2.0)
+    def generar_gcode_aislamiento(self, tipo_broca, diametro, angulo, z_corte, z_seguro, feedrate):
+        import math
+        from shapely.geometry import LineString
+        from shapely.ops import unary_union
 
-        # --- SISTEMA DE BLOQUEO Y CERO AUTOMÁTICO ---
-        # Si olvidaste hacer clic para fijar la cruz roja, buscamos la 
-        # esquina inferior izquierda absoluta del diseño por seguridad.
+        # --- 1. CÁLCULO DEL DIÁMETRO EFECTIVO ---
+        if tipo_broca == "v-bit":
+            # Matemática para broca en V
+            profundidad_fisica = abs(z_corte)
+            media_angulo_rad = math.radians(angulo / 2.0)
+            ensanchamiento = 2.0 * (profundidad_fisica * math.tan(media_angulo_rad))
+            diametro_efectivo = diametro + ensanchamiento
+            print(f"Modo V-Bit -> Punta: {diametro}mm | Ángulo: {angulo}° | Prof: {z_corte}mm")
+        else:
+            # Broca Cilíndrica normal
+            diametro_efectivo = diametro
+            print(f"Modo Cilíndrica -> Diámetro: {diametro}mm | Prof: {z_corte}mm")
+            
+        print(f"Diámetro efectivo de corte a ras de cobre: {diametro_efectivo:.3f}mm")
+
+        # --- 2. PREPARACIÓN GEOMÉTRICA ---
+        ancho_pista_deseado = 0.5 
+        offset = (ancho_pista_deseado / 2.0) + (diametro_efectivo / 2.0)
+
+        # Sistema de seguridad del Cero (0,0)
         if self.pos_p_x is None or self.pos_p_y is None:
             todos_x = [pt[0] for trazo in self.coords_crudas for pt in trazo]
             todos_y = [pt[1] for trazo in self.coords_crudas for pt in trazo]
             if todos_x and todos_y:
-                self.pos_p_x = min(todos_x)
-                self.pos_p_y = min(todos_y)
+                self.pos_p_x, self.pos_p_y = min(todos_x), min(todos_y)
             else:
                 self.pos_p_x, self.pos_p_y = 0.0, 0.0
-
-        origen_x = self.pos_p_x
-        origen_y = self.pos_p_y
 
         lineas_shapely = []
         for trazo in self.coords_crudas:
             if len(trazo) >= 2:
-                # Restamos tu origen manual para que el G-Code sepa que ahí es el 0,0 real
-                trazo_desplazado = [(x - origen_x, y - origen_y) for x, y in trazo]
+                trazo_desplazado = [(x - self.pos_p_x, y - self.pos_p_y) for x, y in trazo]
                 lineas_shapely.append(LineString(trazo_desplazado))
 
-        if not lineas_shapely:
-            return
+        if not lineas_shapely: return
 
-        # 3. La Magia de Shapely: Crear el contorno de aislamiento
+        # --- 3. MAGIA DE SHAPELY Y SUAVIZADO ---
         multi_lineas = unary_union(lineas_shapely)
-        poligonos_engordados = multi_lineas.buffer(offset, cap_style=2, join_style=2)
         
-        # Extraemos solo las fronteras (donde va a pasar la broca)
+        # 1. Suavizar la línea base (elimina el zigzag de los píxeles)
+        tolerancia_suavizado = 0.08 
+        lineas_suaves = multi_lineas.simplify(tolerancia_suavizado, preserve_topology=True)
+
+        # 2. Aplicar el engrosamiento (offset) para la broca
+        poligonos_engordados = lineas_suaves.buffer(offset, resolution=16, cap_style=1, join_style=1)
+        
+        # 3. Suavizar el contorno final para limpiar cualquier imperfección restante
+        poligonos_finales = poligonos_engordados.simplify(0.02, preserve_topology=True)
+
+        # --- EXTRACCIÓN DE RUTAS (Esta es la parte que faltaba) ---
         rutas_corte = []
-        if poligonos_engordados.geom_type == 'Polygon':
-            rutas_corte.append(list(poligonos_engordados.exterior.coords))
-            for interior in poligonos_engordados.interiors:
+        if poligonos_finales.geom_type == 'Polygon':
+            rutas_corte.append(list(poligonos_finales.exterior.coords))
+            for interior in poligonos_finales.interiors: 
                 rutas_corte.append(list(interior.coords))
-        elif poligonos_engordados.geom_type == 'MultiPolygon':
-            for poly in poligonos_engordados.geoms:
+        elif poligonos_finales.geom_type == 'MultiPolygon':
+            for poly in poligonos_finales.geoms:
                 rutas_corte.append(list(poly.exterior.coords))
-                for interior in poly.interiors:
+                for interior in poly.interiors: 
                     rutas_corte.append(list(interior.coords))
 
-        # 4. Generar el G-Code final con control del Eje Z
-        self.gcode_lista = []
-        self.gcode_lista.append("G21 ; Unidades en milimetros")
-        self.gcode_lista.append("G90 ; Posicionamiento absoluto")
-        self.gcode_lista.append(f"G0 Z{z_seguro} ; Subir Z a altura segura")
+        # --- 4. ESCRITURA DEL G-CODE ---
+        self.gcode_lista = [
+            "G21 ; Unidades milimetros",
+            "G90 ; Posicionamiento Absoluto",
+            f"G0 Z{z_seguro} ; Subir a Z seguro"
+        ]
     
         for ruta in rutas_corte:
-            # Movimiento de viaje (Travel): Moverse al inicio de la pista por el aire
             x_ini, y_ini = ruta[0]
-            self.gcode_lista.append(f"G0 X{x_ini:.3f} Y{y_ini:.3f} ; Viaje rapido")
-            
-            # Bajar la broca para cortar
-            self.gcode_lista.append(f"G1 Z{z_corte:.3f} F{feedrate/2} ; Penetrar material")
-            
-            # Recorrer el borde aislando la pista
+            self.gcode_lista.append(f"G0 X{x_ini:.3f} Y{y_ini:.3f}")
+            self.gcode_lista.append(f"G1 Z{z_corte:.3f} F{feedrate/2}")
             for x, y in ruta[1:]:
-                self.gcode_lista.append(f"G1 X{x:.3f} Y{y:.3f} F{feedrate} ; Cortando")
-                
-            # Al terminar el bucle de esa pista, levantar la broca
-            self.gcode_lista.append(f"G0 Z{z_seguro} ; Levantar broca")
+                self.gcode_lista.append(f"G1 X{x:.3f} Y{y:.3f} F{feedrate}")
+            self.gcode_lista.append(f"G0 Z{z_seguro}")
 
-        self.gcode_lista.append("G0 X0 Y0 ; Volver a origen")
-        self.gcode_lista.append("M30 ; Fin del programa")
+        self.gcode_lista.append("G0 X0 Y0")
+        self.gcode_lista.append("M30")
 
-        # Aquí mandamos a redibujar el canvas usando el G-Code seguro
         self.dibujar_rutas_gcode_en_canvas()
 
-        
+
     def dibujar_rutas_gcode_en_canvas(self):
         # Borrar el diseño cyan original
         self.canvas_ref.delete("diseno_cyan")
