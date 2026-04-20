@@ -142,23 +142,26 @@ class CNCControlApp:
         panel_visual.rowconfigure(0, weight=0) # Fila de los botones (no se expande verticalmente)
         panel_visual.rowconfigure(1, weight=1) # Fila de los monitores (ocupa todo el resto)
 
-        # --- BARRA DE EJECUCIÓN (Encima de los monitores) ---
+# --- BARRA DE EJECUCIÓN (Encima de los monitores) ---
         marco_ejecucion = tk.Frame(panel_visual)
         marco_ejecucion.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 10))
 
-        # Los ponemos uno al lado del otro (side=tk.LEFT)
-        self.btn_iniciar = tk.Button(marco_ejecucion, text="▶ Iniciar Grabado PCB", command=self.iniciar_ruteo, bg="lightgreen", state=tk.DISABLED, font=("Arial", 11, "bold"), height=2)
+        # 1. Sub-marco solo para organizar los botones en la parte superior
+        marco_botones = tk.Frame(marco_ejecucion)
+        marco_botones.pack(side=tk.TOP, fill=tk.X)
+
+        self.btn_iniciar = tk.Button(marco_botones, text="▶ Iniciar Grabado PCB", command=self.iniciar_ruteo, bg="lightgreen", state=tk.DISABLED, font=("Arial", 11, "bold"), height=2)
         self.btn_iniciar.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
         
-        self.btn_detener = tk.Button(marco_ejecucion, text="🛑 STOP (Emergencia)", command=self.detener_ruteo, bg="salmon", font=("Arial", 11, "bold"), height=2)
+        self.btn_detener = tk.Button(marco_botones, text="🛑 STOP (Emergencia)", command=self.detener_ruteo, bg="salmon", font=("Arial", 11, "bold"), height=2)
         self.btn_detener.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
 
-        self.btn_reanudar = tk.Button(marco_ejecucion, text="⏯ Continuar (Cambio Broca)", command=self.reanudar_maquina, bg="orange", font=("Arial", 11, "bold"), height=2)
+        self.btn_reanudar = tk.Button(marco_botones, text="⏯ Continuar (Cambio Broca)", command=self.reanudar_maquina, bg="orange", font=("Arial", 11, "bold"), height=2)
         self.btn_reanudar.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
 
-        
-        self.lbl_dimensiones = tk.Label(marco_ejecucion, text="Tamaño: Esperando...", fg="#0044cc", font=("Arial", 11, "bold"), width=25, anchor="w")
-        self.lbl_dimensiones.pack(side=tk.LEFT, padx=5)
+        # 2. Etiqueta de dimensiones empaquetada DEBAJO de los botones
+        self.lbl_dimensiones = tk.Label(marco_ejecucion, text="Tamaño: Esperando...", fg="#0044cc", font=("Arial", 11, "bold"))
+        self.lbl_dimensiones.pack(side=tk.TOP, pady=(5, 0))
 
         # --- MONITORES (Ahora en la fila 1) ---
         marco_rt = tk.LabelFrame(panel_visual, text="Monitor CNC en Tiempo Real", font=("Arial", 11, "bold"), fg="#0044cc")
