@@ -518,6 +518,11 @@ class CNCControlApp:
         from shapely.geometry import LineString
         from shapely.ops import unary_union
 
+        # --- AVISO DE INICIO AL USUARIO ---
+        if hasattr(self, 'lbl_progreso'):
+            self.lbl_progreso.config(text="Generando rutas pesadas... Por favor espere.", fg="blue")
+            self.root.update() # Forzamos a la pantalla a mostrar el mensaje antes de que se congele calculando
+
         # --- 1. CÁLCULO DEL DIÁMETRO EFECTIVO ---
         if tipo_broca == "v-bit":
             profundidad_fisica = abs(z_corte)
@@ -534,7 +539,6 @@ class CNCControlApp:
         offset_base = (ancho_pista_deseado / 2.0) + (diametro_efectivo / 2.0)
         paso_lateral = diametro_efectivo * 0.60
 
-        # 1. Encontrar los extremos totales del diseño
         todos_x = [pt[0] for trazo in self.coords_crudas for pt in trazo]
         todos_y = [pt[1] for trazo in self.coords_crudas for pt in trazo]
         
@@ -545,19 +549,18 @@ class CNCControlApp:
         min_y_tot = min(todos_y)
         max_y_tot = max(todos_y)
 
-        # Sistema de seguridad del Cero (0,0)
         if self.pos_p_x is None or self.pos_p_y is None:
-            self.pos_p_x, self.pos_p_y = min_x_tot, min_y_tot
+            self.pos_p_x, self.pos_p_y = min_x_tot, min_y_tot 
 
         lineas_shapely = []
+        marcos_encontrados = []
+        
         for trazo in self.coords_crudas:
             if len(trazo) >= 2:
-                # 2. FILTRO MEJORADO: ¿Está esta línea pegada a los bordes extremos?
                 es_marco = True
                 tolerancia = 0.5 # mm
                 
                 for x, y in trazo:
-                    # Si al menos un punto de esta línea NO está tocando el límite extremo, entonces es una pista normal
                     en_borde_izq = abs(x - min_x_tot) <= tolerancia
                     en_borde_der = abs(x - max_x_tot) <= tolerancia
                     en_borde_inf = abs(y - min_y_tot) <= tolerancia
@@ -565,13 +568,13 @@ class CNCControlApp:
                     
                     if not (en_borde_izq or en_borde_der or en_borde_inf or en_borde_sup):
                         es_marco = False
-                        break # Deja de revisar esta línea, no es el marco
+                        break 
                 
-                # Si toda la línea estaba en el borde, la saltamos
                 if es_marco:
+                    trazo_desplazado = [(x - self.pos_p_x, y - self.pos_p_y) for x, y in trazo]
+                    marcos_encontrados.append(trazo_desplazado)
                     continue 
                 
-                # Si es una pista normal, la desplazamos según el origen y la guardamos
                 trazo_desplazado = [(x - self.pos_p_x, y - self.pos_p_y) for x, y in trazo]
                 lineas_shapely.append(LineString(trazo_desplazado))
 
@@ -582,16 +585,11 @@ class CNCControlApp:
 
         rutas_corte = []
 
-        # --- AQUÍ ESTÁ EL CAMBIO PARA MÚLTIPLES PASADAS ---
         for pasada in range(num_pasadas):
-            # Calculamos qué tan lejos debe estar esta pasada
             offset_actual = offset_base + (pasada * paso_lateral)
-            
-            # Engordamos las pistas
             poligonos_engordados = lineas_suaves.buffer(offset_actual, resolution=16, cap_style=1, join_style=1)
             poligonos_finales = poligonos_engordados.simplify(0.02, preserve_topology=True)
 
-            # Extraemos las rutas de esta pasada
             if poligonos_finales.geom_type == 'Polygon':
                 rutas_corte.append(list(poligonos_finales.exterior.coords))
                 for interior in poligonos_finales.interiors: 
@@ -602,48 +600,75 @@ class CNCControlApp:
                     for interior in poly.interiors: 
                         rutas_corte.append(list(interior.coords))
 
-            self.gcode_lista = [
+        self.gcode_lista = [
             "G21 ; Unidades milimetros",
             "G90 ; Posicionamiento Absoluto",
             f"G0 Z{z_seguro} ; Subir a Z seguro"
         ]
-    
-        total_rutas = len(rutas_corte)
         
-        # Preparamos la barra y el texto
-        if hasattr(self, 'progress_bar'):
-            self.progress_bar['maximum'] = total_rutas
-            self.progress_bar['value'] = 0
-            self.lbl_progreso.config(text="Iniciando generación de trayectorias...")
-            self.root.update_idletasks()
-
-        for i, ruta in enumerate(rutas_corte):
+        # --- 4. ESCRITURA DE PISTAS (LIMPIA, SIN BARRA DE PROGRESO) ---
+        for ruta in rutas_corte:
             x_ini, y_ini = ruta[0]
             self.gcode_lista.append(f"G0 X{x_ini:.3f} Y{y_ini:.3f}")
             self.gcode_lista.append(f"G1 Z{z_corte:.3f} F{feedrate/2}")
             for x, y in ruta[1:]:
                 self.gcode_lista.append(f"G1 X{x:.3f} Y{y:.3f} F{feedrate}")
             self.gcode_lista.append(f"G0 Z{z_seguro}")
+
+        # --- 5. PERFORACIONES ---
+        if hasattr(self, 'coords_perforaciones') and len(self.coords_perforaciones) > 0:
+            self.gcode_lista.append("; --- INICIO PERFORACIONES ---")
+            self.gcode_lista.append("G0 Z15.0 ; Subir el cabezal bien alto")
+            self.gcode_lista.append("G0 X0 Y0 ; Regresar al origen")
             
-            # ACTUALIZACIÓN DE BARRA Y TEXTO
-            if hasattr(self, 'progress_bar'):
-                self.progress_bar['value'] = i + 1
-                porcentaje = int(((i + 1) / total_rutas) * 100)
+            self.gcode_lista.append("M0 ; !!! PAUSA 1: QUITE LA BROCA V-BIT. PONGA LA DE PERFORAR SUELTA !!!")
+            self.gcode_lista.append("G0 Z0.0 ; Bajar al ras de la placa")
+            self.gcode_lista.append("M0 ; !!! PAUSA 2: APRIETE LA BROCA DE PERFORAR AHORA !!!")
+            self.gcode_lista.append(f"G0 Z{z_seguro} ; Subir a Z seguro")
+            
+            for px, py in self.coords_perforaciones:
+                px_ajustado = px - self.pos_p_x
+                py_ajustado = py - self.pos_p_y
                 
-                # Cada 5 rutas actualizamos el texto y la pantalla
-                if i % 5 == 0: 
-                    self.lbl_progreso.config(text=f"Procesando G-Code: {porcentaje}% ({i+1}/{total_rutas} rutas)")
-                    self.root.update_idletasks()
+                self.gcode_lista.append(f"G0 X{px_ajustado:.3f} Y{py_ajustado:.3f} ; Ir al agujero")
+                self.gcode_lista.append(f"G1 Z{self.Z_PERFORACION:.3f} F50 ; Bajar y perforar")
+                self.gcode_lista.append(f"G0 Z{z_seguro} ; Subir broca")
 
-        # Al finalizar, informamos al usuario
-        if hasattr(self, 'progress_bar'):
+        # --- 6. CORTE DE BORDE (PERFILADO FINAL) ---
+        if marcos_encontrados:
+            self.gcode_lista.append("; --- INICIO CORTE DE BORDE ---")
+            self.gcode_lista.append("G0 Z15.0 ; Subir el cabezal bien alto")
+            self.gcode_lista.append("G0 X0 Y0 ; Regresar al origen")
+            
+            self.gcode_lista.append("M0 ; !!! PAUSA 3: PONGA FRESA PLANA PARA CORTAR BORDE. DEJELA SUELTA !!!")
+            self.gcode_lista.append("G0 Z0.0 ; Bajar al ras de la placa")
+            self.gcode_lista.append("M0 ; !!! PAUSA 4: APRIETE LA FRESA FIRMEMENTE !!!")
+            self.gcode_lista.append(f"G0 Z{z_seguro} ; Subir a Z seguro")
+            
+            num_pasadas_borde = 4
+            paso_z = self.Z_PERFORACION / num_pasadas_borde 
+            
+            for marco in marcos_encontrados:
+                x_ini, y_ini = marco[0]
+                self.gcode_lista.append(f"G0 X{x_ini:.3f} Y{y_ini:.3f} ; Ir al inicio del borde")
+                
+                for p in range(1, num_pasadas_borde + 1):
+                    z_actual = paso_z * p
+                    self.gcode_lista.append(f"G1 Z{z_actual:.3f} F50 ; Corte borde Pasada {p} de {num_pasadas_borde}")
+                    for x, y in marco[1:]:
+                        self.gcode_lista.append(f"G1 X{x:.3f} Y{y:.3f} F{feedrate}")
+                    
+                self.gcode_lista.append(f"G0 Z{z_seguro} ; Subir fresa al terminar borde")
+
+        # --- 7. FIN DEL PROGRAMA ---
+        self.gcode_lista.append("G0 Z15.0 ; Levantar para sacar la placa")
+        self.gcode_lista.append("G0 X0 Y0 ; Regresar al origen final")
+        self.gcode_lista.append("M30 ; Fin del programa")
+
+        # --- AVISO DE FIN AL USUARIO ---
+        if hasattr(self, 'lbl_progreso'):
             self.lbl_progreso.config(text="¡G-Code generado con éxito!", fg="green")
-            # Dejamos el mensaje 2 segundos y luego limpiamos
-            self.root.after(2000, lambda: self.lbl_progreso.config(text=""))
-            self.progress_bar['value'] = 0
-
-        self.gcode_lista.append("G0 X0 Y0")
-        self.gcode_lista.append("M30")
+            self.root.update()
 
         self.dibujar_rutas_gcode_en_canvas()
 
@@ -1173,13 +1198,16 @@ class CNCControlApp:
             self.actualizar_estado_manual()
             
             messagebox.showwarning("Parada de Emergencia", "¡Se ha detenido la máquina!\nRegresando al origen X0 Y0, con Z elevado a +0.5")
+   
     def reanudar_maquina(self):
         if self.conectado and self.puerto_serial:
             # Enviamos el comando de "Cycle Start" a GRBL para salir del M0
             self.puerto_serial.write(b"~\n")
             print("Comando de reanudación (~) enviado a la CNC.")
+            
+            # --- CAMBIO COSMÉTICO AQUÍ ---
             if hasattr(self, 'lbl_progreso'):
-                self.lbl_progreso.config(text="Reanudando trabajo: Perforando...", fg="blue")
+                self.lbl_progreso.config(text="Reanudando operación de la máquina...", fg="blue")
         else:
             messagebox.showwarning("Advertencia", "No hay conexión con la máquina CNC.")
 
