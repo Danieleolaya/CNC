@@ -290,7 +290,7 @@ class CNCControlApp:
         import re
         import os
         from tkinter import filedialog, messagebox
-
+        
         ruta = filedialog.askopenfilename(filetypes=[("Gerber", "*.gbr *.gtl *.gbl *.nc *.txt"), ("Todos los archivos", "*.*")])
         if not ruta: return
 
@@ -307,19 +307,58 @@ class CNCControlApp:
         self.cursor_herramienta = None
         self.pos_p_x = None
         self.pos_p_y = None
-
+        
         try:
             with open(ruta, 'r') as f:
                 lineas = f.readlines()
 
+            # --- 0. DETECTAR UNIDADES ---
+            unidad_pulgadas = False
+            for l in lineas:
+                if '%MOIN*%' in l:
+                    unidad_pulgadas = True
+                    break
+
+            # --- 1. DICCIONARIO INTELIGENTE DE FORMAS (Círculo o Rectángulo) ---
+            diccionario_aperturas = {}
+            # Atrapa: %ADD10C,0.8*% o %ADD11R,0.8X0.8*%
+            regex_def_apertura = re.compile(r'%ADD(\d+)([a-zA-Z]+),([\d.X]+)')
+            
+            for l in lineas:
+                match_def = regex_def_apertura.search(l)
+                if match_def:
+                    d_code = match_def.group(1) 
+                    forma = match_def.group(2).upper() # 'C' o 'R'
+                    medida_str = match_def.group(3)
+                    
+                    if 'X' in medida_str:
+                        w, h = map(float, medida_str.split('X'))
+                    else:
+                        w = float(medida_str)
+                        h = w
+                        
+                    if unidad_pulgadas:
+                        w *= 25.4
+                        h *= 25.4
+                        
+                    # Reducimos un 15% el tamaño real como "Margen de Seguridad" 
+                    # para que el CAM no fusione los que están muy juntos.
+                    diccionario_aperturas[d_code] = {"forma": forma, "w": w * 0.85, "h": h * 0.85}
+
+            # --- 2. EXTRAER COORDENADAS ---
             divisor = 100000.0
             coords = []
+            px_tmp, py_tmp = 0.0, 0.0
             for l in lineas:
                 mx, my = re.search(r'X([\+\-]?\d+)', l), re.search(r'Y([\+\-]?\d+)', l)
                 if mx or my:
-                    vx = float(mx.group(1))/divisor if mx else 0
-                    vy = float(my.group(1))/divisor if my else 0
-                    coords.append((vx, vy))
+                    if mx:
+                        px_tmp = float(mx.group(1))/divisor
+                        if unidad_pulgadas: px_tmp *= 25.4
+                    if my:
+                        py_tmp = float(my.group(1))/divisor
+                        if unidad_pulgadas: py_tmp *= 25.4
+                    coords.append((px_tmp, py_tmp))
 
             if coords:
                 min_x = min(c[0] for c in coords); max_x = max(c[0] for c in coords)
@@ -334,14 +373,28 @@ class CNCControlApp:
 
                 px, py = 0.0, 0.0
                 trazo_actual = [] 
+                
+                regex_cambio_d = re.compile(r'D([1-9]\d+)\*') 
+                apertura_actual = {"forma": "C", "w": 0.8, "h": 0.8}
 
+                # --- 3. DIBUJAR PISTAS Y PADS ---
                 for l in lineas:
+                    match_d = regex_cambio_d.search(l)
+                    if match_d:
+                        num_d = match_d.group(1)
+                        if int(num_d) >= 10: 
+                            apertura_actual = diccionario_aperturas.get(num_d, apertura_actual)
+
                     mx, my = re.search(r'X([\+\-]?\d+)', l), re.search(r'Y([\+\-]?\d+)', l)
                     
-                    # Extraemos coordenadas con seguridad para no perder renglones
-                    if mx: cx = float(mx.group(1))/divisor
+                    if mx:
+                        cx = float(mx.group(1))/divisor
+                        if unidad_pulgadas: cx *= 25.4
                     else: cx = px
-                    if my: cy = float(my.group(1))/divisor
+                        
+                    if my:
+                        cy = float(my.group(1))/divisor
+                        if unidad_pulgadas: cy *= 25.4
                     else: cy = py
 
                     if 'D01' in l or 'D1*' in l:
@@ -358,48 +411,122 @@ class CNCControlApp:
                             self.coords_crudas.append(trazo_actual)
                             trazo_actual = []
                             
-                        # ¡MAGIA PARA CREAR LOS PADS (HUECOS) ANCHOS!
                         if 'D03' in l or 'D3*' in l:
+                            forma = apertura_actual["forma"]
+                            rw = apertura_actual["w"] / 2.0
+                            rh = apertura_actual["h"] / 2.0
                             
-                            # Configuración del ancho: 0.8mm de radio base + 0.25mm de pista normal
-                            # Resultado = Pad circular de aprox 2.1mm de diámetro (Perfecto para soldar integrados o headers).
-                            radio_pad = 0.8  
-                            
-                            # Creamos el asterisco
-                            cruz_h = [(cx - radio_pad, cy), (cx + radio_pad, cy)]
-                            cruz_v = [(cx, cy - radio_pad), (cx, cy + radio_pad)]
-                            cruz_d1 = [(cx - radio_pad*0.7, cy - radio_pad*0.7), (cx + radio_pad*0.7, cy + radio_pad*0.7)]
-                            cruz_d2 = [(cx - radio_pad*0.7, cy + radio_pad*0.7), (cx + radio_pad*0.7, cy - radio_pad*0.7)]
-                            
-                            # Lo inyectamos silenciosamente a la ruta de coordenadas
-                            self.coords_crudas.extend([cruz_h, cruz_v, cruz_d1, cruz_d2])
-                            
-                            # Visualización gráfica en la pantalla para que notes que ya lo detectó
-                            r_vis = max(2, int((radio_pad) * self.escala_ref))
                             x_c = (cx*self.escala_ref)+self.offset_x_ref
                             y_c = self.offset_y_ref-(cy*self.escala_ref)
-                            self.canvas_ref.create_oval(x_c-r_vis, y_c-r_vis, x_c+r_vis, y_c+r_vis, outline="cyan")
+                            
+                            if forma == 'R' or forma == 'S': 
+                                # ES UN PAD CUADRADO/RECTANGULAR
+                                # 1. Dibujamos el contorno para Shapeley
+                                borde = [(cx-rw, cy-rh), (cx+rw, cy-rh), (cx+rw, cy+rh), (cx-rw, cy+rh), (cx-rw, cy-rh)]
+                                # 2. Dibujamos una cruz interna para que sea macizo
+                                cruz_x = [(cx-rw, cy-rh), (cx+rw, cy+rh)]
+                                cruz_y = [(cx+rw, cy-rh), (cx-rw, cy+rh)]
+                                self.coords_crudas.extend([borde, cruz_x, cruz_y])
+                                
+                                # Visual
+                                r_w_vis, r_h_vis = max(2, int(rw*self.escala_ref)), max(2, int(rh*self.escala_ref))
+                                self.canvas_ref.create_rectangle(x_c-r_w_vis, y_c-r_h_vis, x_c+r_w_vis, y_c+r_h_vis, outline="cyan")
+                            
+                            else:
+                                # PAD CIRCULAR PERFECTO (Anillos concéntricos macizos sin picos)
+                                import math
+                                r_actual = rw
+                                formas_circulo = []
+                                
+                                # Hacemos anillos concéntricos hacia el centro para rellenar (como una diana)
+                                while r_actual >= 0.02:
+                                    anillo = []
+                                    # Polígono de 20 lados (circular perfecto para la CNC)
+                                    for i in range(21):
+                                        angulo = i * (2 * math.pi / 20)
+                                        anillo.append((cx + r_actual * math.cos(angulo), cy + r_actual * math.sin(angulo)))
+                                    formas_circulo.append(anillo)
+                                    r_actual -= 0.15 # Espaciado denso para que el motor matemático lo fusione todo
+                                
+                                self.coords_crudas.extend(formas_circulo)
+                                
+                                # Visual (En la pantalla solo dibujamos el contorno para no saturarla)
+                                r_vis = max(2, int(rw*self.escala_ref))
+                                self.canvas_ref.create_oval(x_c-r_vis, y_c-r_vis, x_c+r_vis, y_c+r_vis, outline="cyan")
 
                     px, py = cx, cy
 
                 if trazo_actual:
                     self.coords_crudas.append(trazo_actual)
 
+                # --- 4. SEPARADOR DE BORDE PERSONALIZADO (PROTEUS) ---
+                todos_x = [pt[0] for trazo in self.coords_crudas for pt in trazo]
+                todos_y = [pt[1] for trazo in self.coords_crudas for pt in trazo]
+                
+                self.coords_borde_proteus = [] 
+                
+                if todos_x and todos_y:
+                    min_x_abs = min(todos_x)
+                    max_x_abs = max(todos_x)
+                    min_y_abs = min(todos_y)
+                    max_y_abs = max(todos_y)
+                    
+                    trazos_limpios = []
+                    tolerancia = 0.5 
+                    
+                    for trazo in self.coords_crudas:
+                        es_borde_placa = True
+                        for x, y in trazo:
+                            toca_marco = (abs(x - min_x_abs) <= tolerancia or 
+                                          abs(max_x_abs - x) <= tolerancia or 
+                                          abs(max_y_abs - y) <= tolerancia or 
+                                          abs(y - min_y_abs) <= tolerancia)
+                            if not toca_marco:
+                                es_borde_placa = False
+                                break
+                        
+                        if es_borde_placa:
+                            self.coords_borde_proteus.append(trazo)
+                        else:
+                            trazos_limpios.append(trazo)
+                    
+                    self.coords_crudas = trazos_limpios
+
+                # --- 5. REDIBUJAR DISEÑO INTELIGENTE EN PANTALLA ---
+                self.canvas_ref.delete("diseno_cyan")
+                
+                # Pistas normales (Cyan)
+                for trazo in self.coords_crudas:
+                    for i in range(len(trazo)-1):
+                        x1 = (trazo[i][0] * self.escala_ref) + self.offset_x_ref
+                        y1 = self.offset_y_ref - (trazo[i][1] * self.escala_ref)
+                        x2 = (trazo[i+1][0] * self.escala_ref) + self.offset_x_ref
+                        y2 = self.offset_y_ref - (trazo[i+1][1] * self.escala_ref)
+                        self.canvas_ref.create_line(x1, y1, x2, y2, fill="cyan", tags="diseno_cyan")
+                        
+                # TU borde personalizado (Magenta)
+                for trazo in self.coords_borde_proteus:
+                    for i in range(len(trazo)-1):
+                        x1 = (trazo[i][0] * self.escala_ref) + self.offset_x_ref
+                        y1 = self.offset_y_ref - (trazo[i][1] * self.escala_ref)
+                        x2 = (trazo[i+1][0] * self.escala_ref) + self.offset_x_ref
+                        y2 = self.offset_y_ref - (trazo[i+1][1] * self.escala_ref)
+                        self.canvas_ref.create_line(x1, y1, x2, y2, fill="magenta", width=2, tags="diseno_cyan")
+
         except Exception as e:
             print("Nota: Error procesando archivo:", e)
 
         self.btn_cam.config(state=tk.NORMAL)
         self.btn_limpiar.config(state=tk.NORMAL)
-        self.actualizar_estado_manual()
         
         self.canvas_ref.bind("<Button-1>", self.fijar_origen_clic)
-        messagebox.showinfo("Gerber Cargado", "1. Archivo leído correctamente.\n\nAHORA DEBES hacer clic en '2. Configuración CAM'.")
-
+        messagebox.showinfo("Gerber Cargado", "1. Archivo leído correctamente con formas experimentales.\\n\\nAHORA DEBES hacer clic en '2. Configuración CAM'.")
+   
     def abrir_menu_cam(self):
         # Creamos una ventana emergente para la configuración
         ventana_cam = tk.Toplevel(self.root)
         ventana_cam.title("Configuración CAM - Herramienta de Corte")
-        ventana_cam.geometry("350x520")
+        ventana_cam.geometry("350x580") # Aumentamos un poco la altura para el nuevo ajuste
         ventana_cam.grab_set() # Bloquea la ventana principal hasta que se cierre esta
 
         tk.Label(ventana_cam, text="Ajustes de Generación de G-Code", font=("Arial", 12, "bold")).pack(pady=10)
@@ -457,7 +584,7 @@ class CNCControlApp:
             z_corte = float(self.entry_z_corte.get())
             z_seguro = float(self.entry_z_seguro.get())
             feedrate = float(self.entry_feedrate.get())
-            num_pasadas = int(self.entry_pasadas.get()) # <-- NUEVA LÍNEA
+            num_pasadas = int(self.entry_pasadas.get()) 
             
             # Condicionar el ángulo
             if tipo_broca == "v-bit":
@@ -465,7 +592,7 @@ class CNCControlApp:
             else:
                 angulo = 0.0
 
-            # Llamar a la función matemática (añadimos num_pasadas al final)
+            # Llamar a la función matemática (¡Ya SIN el buffer_pistas!)
             self.generar_gcode_aislamiento(tipo_broca, diametro, angulo, z_corte, z_seguro, feedrate, num_pasadas)
             
             # Cerrar la ventana tras generar con éxito
@@ -533,15 +660,16 @@ class CNCControlApp:
 
         print(f"Nuevo origen fijado en X: {self.pos_p_x:.3f}, Y: {self.pos_p_y:.3f}")
 
+
     def generar_gcode_aislamiento(self, tipo_broca, diametro, angulo, z_corte, z_seguro, feedrate, num_pasadas=1):
         import math
-        from shapely.geometry import LineString
+        from shapely.geometry import LineString, Polygon
         from shapely.ops import unary_union
 
         # --- AVISO DE INICIO AL USUARIO ---
         if hasattr(self, 'lbl_progreso'):
             self.lbl_progreso.config(text="Generando rutas pesadas... Por favor espere.", fg="blue")
-            self.root.update() # Forzamos a la pantalla a mostrar el mensaje antes de que se congele calculando
+            self.root.update()
 
         # --- 1. CÁLCULO DEL DIÁMETRO EFECTIVO ---
         if tipo_broca == "v-bit":
@@ -554,13 +682,18 @@ class CNCControlApp:
             
         print(f"Diámetro efectivo de corte: {diametro_efectivo:.3f}mm. Pasadas: {num_pasadas}")
 
-        # --- 2. PREPARACIÓN GEOMÉTRICA Y FILTRO DE MARCO ---
-        ancho_pista_deseado = 0.5 
-        offset_base = (ancho_pista_deseado / 2.0) + (diametro_efectivo / 2.0)
+        # --- 2. PREPARACIÓN GEOMÉTRICA ---
+        ancho_pista_deseado = 1.0 # Ancho final que queremos para las pistas después del aislamiento
+        offset_base = diametro_efectivo / 2.0 
         paso_lateral = diametro_efectivo * 0.60
 
         todos_x = [pt[0] for trazo in self.coords_crudas for pt in trazo]
         todos_y = [pt[1] for trazo in self.coords_crudas for pt in trazo]
+        
+        if hasattr(self, 'coords_borde_proteus'):
+            for trazo in self.coords_borde_proteus:
+                todos_x.extend([pt[0] for pt in trazo])
+                todos_y.extend([pt[1] for pt in trazo])
         
         if not todos_x or not todos_y: return
         
@@ -572,43 +705,92 @@ class CNCControlApp:
         if self.pos_p_x is None or self.pos_p_y is None:
             self.pos_p_x, self.pos_p_y = min_x_tot, min_y_tot 
 
-        lineas_shapely = []
+        trazos_abiertos = []
+        poligonos_pads_raw = []
         marcos_encontrados = []
         
+        if hasattr(self, 'coords_borde_proteus'):
+            for trazo in self.coords_borde_proteus:
+                trazo_desplazado = [(x - self.pos_p_x, y - self.pos_p_y) for x, y in trazo]
+                marcos_encontrados.append(trazo_desplazado)
+
+        # 2.1 Separar Pads (Cerrados) de Líneas (Abiertas)
         for trazo in self.coords_crudas:
             if len(trazo) >= 2:
-                es_marco = True
-                tolerancia = 0.5 # mm
-                
-                for x, y in trazo:
-                    en_borde_izq = abs(x - min_x_tot) <= tolerancia
-                    en_borde_der = abs(x - max_x_tot) <= tolerancia
-                    en_borde_inf = abs(y - min_y_tot) <= tolerancia
-                    en_borde_sup = abs(y - max_y_tot) <= tolerancia
-                    
-                    if not (en_borde_izq or en_borde_der or en_borde_inf or en_borde_sup):
-                        es_marco = False
-                        break 
-                
-                if es_marco:
-                    trazo_desplazado = [(x - self.pos_p_x, y - self.pos_p_y) for x, y in trazo]
-                    marcos_encontrados.append(trazo_desplazado)
-                    continue 
-                
                 trazo_desplazado = [(x - self.pos_p_x, y - self.pos_p_y) for x, y in trazo]
-                lineas_shapely.append(LineString(trazo_desplazado))
+                
+                es_pad = False
+                if len(trazo_desplazado) >= 4:
+                    p_ini = trazo_desplazado[0]
+                    p_fin = trazo_desplazado[-1]
+                    if math.hypot(p_ini[0] - p_fin[0], p_ini[1] - p_fin[1]) < 0.001:
+                        es_pad = True
+                
+                if es_pad:
+                    try:
+                        poly = Polygon(trazo_desplazado).buffer(0.001).buffer(-0.001)
+                        if not poly.is_empty:
+                            poligonos_pads_raw.append(poly)
+                    except:
+                        trazos_abiertos.append(trazo_desplazado)
+                else:
+                    trazos_abiertos.append(trazo_desplazado)
 
-        # --- 3. MAGIA DE SHAPELY Y SUAVIZADO ---
-        multi_lineas = unary_union(lineas_shapely)
-        tolerancia_suavizado = 0.08 
-        lineas_suaves = multi_lineas.simplify(tolerancia_suavizado, preserve_topology=True)
+        # 2.2 Unir todos los pads reales en una sola capa matemática
+        if poligonos_pads_raw:
+            cobre_pads_exacto = unary_union(poligonos_pads_raw)
+            # Dilatamos mínimamente para detectar si una línea está "dentro" del pad
+            area_pads_cobertura = cobre_pads_exacto.buffer(0.02)
+        else:
+            cobre_pads_exacto = Polygon()
+            area_pads_cobertura = Polygon()
+
+        lineas_pistas = []
+
+        # 2.3 Filtrar y estirar SOLO las pistas reales (Ignorar cruces internas)
+        for trazo_abierto in trazos_abiertos:
+            linea_temp = LineString(trazo_abierto)
+            
+            # MAGIA AQUÍ: Si la línea es una cruz interna de relleno, la ignoramos.
+            if area_pads_cobertura.covers(linea_temp):
+                continue
+                
+            # Si no es una cruz, es una pista real. ¡La estiramos!
+            trazo_estirado = list(trazo_abierto)
+            dist_ext = 0.4
+            
+            x0, y0 = trazo_estirado[0]
+            x1, y1 = trazo_estirado[1]
+            L1 = math.hypot(x1-x0, y1-y0)
+            if L1 > 0:
+                trazo_estirado[0] = (x0 - (x1-x0)/L1 * dist_ext, y0 - (y1-y0)/L1 * dist_ext)
+                
+            x_end, y_end = trazo_estirado[-1]
+            x_prev, y_prev = trazo_estirado[-2]
+            L2 = math.hypot(x_end-x_prev, y_end-y_prev)
+            if L2 > 0:
+                trazo_estirado[-1] = (x_end + (x_end-x_prev)/L2 * dist_ext, y_end + (y_end-y_prev)/L2 * dist_ext)
+                
+            lineas_pistas.append(LineString(trazo_estirado))
+
+        # --- 3. CONSTRUCCIÓN DEL COBRE EXACTO ---
+        if lineas_pistas:
+            cobre_pistas = unary_union(lineas_pistas).buffer(ancho_pista_deseado / 2.0, cap_style=1, join_style=1)
+        else:
+            cobre_pistas = Polygon()
+
+        # Unimos el cobre
+        cobre_total = unary_union([cobre_pistas, cobre_pads_exacto])
+        cobre_fusionado = cobre_total.buffer(0.05, join_style=1).buffer(-0.05, join_style=1)
+        cobre_suavizado = cobre_fusionado.simplify(0.005, preserve_topology=True)
 
         rutas_corte = []
 
+        # Aislar forzando las esquinas rectas para los pads cuadrados
         for pasada in range(num_pasadas):
             offset_actual = offset_base + (pasada * paso_lateral)
-            poligonos_engordados = lineas_suaves.buffer(offset_actual, resolution=16, cap_style=1, join_style=1)
-            poligonos_finales = poligonos_engordados.simplify(0.02, preserve_topology=True)
+            poligonos_engordados = cobre_suavizado.buffer(offset_actual, cap_style=2, join_style=2)
+            poligonos_finales = poligonos_engordados.simplify(0.01, preserve_topology=True)
 
             if poligonos_finales.geom_type == 'Polygon':
                 rutas_corte.append(list(poligonos_finales.exterior.coords))
@@ -626,7 +808,7 @@ class CNCControlApp:
             f"G0 Z{z_seguro} ; Subir a Z seguro"
         ]
         
-        # --- 4. ESCRITURA DE PISTAS (LIMPIA, SIN BARRA DE PROGRESO) ---
+        # --- 4. ESCRITURA DE PISTAS ---
         for ruta in rutas_corte:
             x_ini, y_ini = ruta[0]
             self.gcode_lista.append(f"G0 X{x_ini:.3f} Y{y_ini:.3f}")
