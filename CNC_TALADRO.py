@@ -59,10 +59,12 @@ class CNCControlApp:
         
         frame_serial = tk.Frame(panel_control, bg="#f0f0f0")
         frame_serial.pack(pady=5)
+       
+# Filtra inteligentemente solo los puertos útiles de Windows (COM) y Linux (USB/ACM)
+        puertos = [puerto.device for puerto in serial.tools.list_ports.comports() if "COM" in puerto.device or "USB" in puerto.device or "ACM" in puerto.device]
         
-        puertos = [puerto.device for puerto in serial.tools.list_ports.comports()]
         self.puerto_seleccionado = tk.StringVar(value=puertos[0] if puertos else "Ninguno")
-        tk.OptionMenu(frame_serial, self.puerto_seleccionado, *puertos if puertos else ["Ninguno"]).pack(side=tk.LEFT, padx=2)
+        tk.OptionMenu(frame_serial, self.puerto_seleccionado, *(puertos if puertos else ["Ninguno"])).pack(side=tk.LEFT, padx=2)
         
         baudios = ["9600", "19200", "38400", "57600", "115200"]
         self.baudios_seleccionados = tk.StringVar(value="115200")
