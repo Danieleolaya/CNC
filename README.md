@@ -1,106 +1,168 @@
-# Control CNC PCB - Generador CAM y Monitor en Tiempo Real con Registro de Pruebas
+# Control CNC PCB - Generador CAM y Monitor en Tiempo Real
 
-Este proyecto es una interfaz gráfica de usuario (GUI) avanzada desarrollada en Python con Tkinter para el control y automatización de máquinas CNC, optimizada para el aislamiento y ruteo de placas de circuito impreso (PCB) a partir de archivos estándar de manufactura (Gerber y Excellon).
+Este proyecto es una interfaz gráfica de usuario (GUI) desarrollada en Python con Tkinter para el control y monitoreo de máquinas CNC, diseñada específicamente para el ruteo de aislamiento, perforación y corte de placas de circuito impreso (PCB).
 
-El software permite conectarse a una máquina con firmware GRBL, controlar sus ejes mediante movimiento manual (Jog), encender/apagar el husillo, realizar alineación visual del origen, procesar matemáticamente pistas complejas (aislamiento por vaciado), programar perforaciones y contornos de corte de borde con control automático de cambio de herramientas, y generar un registro métrico de rendimiento de pruebas empíricas.
+El software permite realizar una conexión directa con tarjetas controladoras que utilicen firmware GRBL, controlar manualmente los ejes, cargar archivos Gerber (`.GBR`) y Excellon (`.drl`/`.txt`), procesar trayectorias mediante un motor CAM geométrico avanzado, gestionar cambios de herramienta guiados y visualizar el progreso de corte en tiempo real.
 
 ---
 
 ## 🚀 Características Principales
 
-* **Comunicación Serial Activa:** Conexión interactiva con GRBL seleccionando puertos autodetectados de manera inteligente (COM/USB/ACM) y control de baudios.
-* **Consola de Configuración Directa:** Acceso para modificar los parámetros internos del firmware GRBL (valores `$$`) directamente desde la GUI sin software externo.
-* **Control de Husillo (Spindle Control):** Botones integrados para encender (`M3`) y apagar (`M5`) el motor de corte de forma remota.
-* **Procesamiento de Archivos de Manufactura:**
-  * **Capa Gerber (.GBR):** Lectura, escala automática y mapeo del circuito de cobre. Detecta automáticamente unidades en pulgadas (`%MOIN*%`) y las convierte a milímetros.
-  * **Capa Excellon/Taladro (.DRL/.TXT):** Carga dinámica de coordenadas de perforación mapeadas con respecto al mismo origen de la placa.
-* **Alineación por un Clic (Origen Relativo):** Permite al operario definir el punto `(0,0)` de trabajo haciendo clic en cualquier parte del diseño del monitor de referencia.
-* **Motor CAM Avanzado con V-Bit Math:**
-  * Generación de trayectorias con múltiples pasadas para vaciado de cobre a voluntad del usuario.
-  * Compensación trigonométrica automática para herramientas cónicas (V-Bits).
-  * Optimización geométrica mediante la librería `shapely` para evitar colisiones, estirar pistas de conexión y saltar trazos redundantes internos en los pads.
-* **Manejo de Herramientas y Pausas Sincronizadas (`M0`):** Implementación de paradas automáticas organizadas para cambios seguros de brocas físicas (broca en V -> broca helicoidal -> fresa de corte) con instrucciones en pantalla.
-* **Corte de Borde por Pasadas Dinámicas:** Generación automática de un marco exterior perimetral (Bounding Box) con una holgura segura de 2 mm y cálculo de desgaste con cortes progresivos hacia el eje Z.
-* **Monitores Visuales Interactivos:**
-  * **Monitor de Referencia (Derecho):** Muestra el diseño original en color cyan, el área perimetral de corte en magenta, las perforaciones en naranja y las trayectorias finales procesadas en verde.
-  * **Monitor en Tiempo Real (Izquierdo):** Renderiza el trayecto que realiza físicamente la fresa sobre la placa de cobre durante la ejecución real.
-* **Seguridad por Hilos y Estados:**
-  * Ejecución del código G-code en un hilo independiente (`threading`) para prevenir el bloqueo de la interfaz gráfica de usuario.
-  * Botón de Parada de Emergencia (STOP) que interrumpe la transmisión instantáneamente (`\x18`), limpia la cola del buffer, levanta el eje Z a zona segura y apaga los motores.
-* **Módulo de Métricas e Historial de Pruebas (Data Logging):** Guarda automáticamente la duración exacta y el archivo procesado en un archivo físico de texto (`Resultados_Tesis_Log.txt`) para alimentar las gráficas y análisis de la tesis.
+* **Comunicación Serial Multiplataforma:** Autodetecta y filtra puertos seriales útiles en Windows (puertos `COM`) y en Linux (puertos `/dev/ttyUSB` o `/dev/ttyACM`).
+* **Control Manual Integrado (Jogging):** Control interactivo para mover los ejes X, Y y Z en milímetros, fijar ceros de trabajo virtuales (`G10 L20`), retornar al origen de forma rápida y controlar el motor (husillo/spindle) mediante comandos directos (`M3`/`M5`).
+* **Motor CAM de Aislamiento Avanzado:**
+  * **Trigonometría para Brocas Conónicas (V-Bit):** Ajuste del diámetro efectivo de corte en base a la profundidad y ángulo de la broca.
+  * **Cálculo de Colisiones y Unión Geométrica:** Fusión de pistas y pads mediante operaciones poligonales para evitar pasadas redundantes.
+  * **Aislamiento Multi-Pasada:** Configuración del número de pasadas para vaciado de cobre (estover) facilitando la soldadura.
+  * **Compensación de Esquinas y Pistas:** Estiramiento inteligente de extremos de pista para evitar cortes incompletos.
+* **Procesamiento de Perforaciones (Excellon):** Permite importar coordenadas de taladros para automatizar los agujeros de componentes, alineándose automáticamente con el origen gráfico seleccionado.
+* **Corte de Borde Automático (Profiling):** Calcula el contenedor exterior (*Bounding Box*) del circuito y genera trayectorias en múltiples pasadas de profundidad (*Step-downs*) para recortar el contorno físico de la placa.
+* **Manejo de Pausas y Cambio de Herramienta:** Inserta pausas físicas (`M0`) acompañadas de instrucciones y guías en pantalla para realizar la calibración de altura de manera segura durante el cambio de brocas.
+* **Monitoreo Visual Dual:**
+  * **Monitor de Referencia (Derecha):** Renderiza el diseño original en cyan, el corte de borde en magenta, las perforaciones en naranja y las trayectorias de aislamiento resultantes en verde. Permite asignar el origen de coordenadas `(0,0)` haciendo clic en pantalla.
+  * **Monitor en Tiempo Real (Izquierda):** Grafica y sigue la posición actual del husillo, mostrando el rastro físico del mecanizado en tiempo real.
+* **Registro de Tesis (Logging):** Almacena automáticamente los resultados de mecanizado (nombre del archivo y tiempo total de ejecución) en el archivo `Resultados_Tesis_Log.txt` para análisis de rendimiento académico.
 
 ---
 
-## 🛠️ Requisitos Previos e Instalación del Software
+## 🛠️ Requisitos Previos e Instalación
 
-Para ejecutar este software, necesitas tener **Python 3.x** instalado en tu computadora.
+Este programa está escrito en Python 3 y utiliza librerías de cálculo geométrico y procesamiento de imágenes. A continuación se presentan las instrucciones detalladas para preparar el entorno tanto en Windows como en Linux.
 
-### Librerías requeridas:
-Abre tu terminal (Símbolo del sistema, PowerShell o la terminal de VS Code) y ejecuta el siguiente comando para instalar las dependencias necesarias:
-
-`pip install pyserial shapely Pillow opencv-python numpy`
-
-* **`pyserial`**: Permite la comunicación por puerto USB/COM entre tu computadora y la placa controladora de la CNC.
-* **`shapely`**: El cerebro matemático detrás del CAM. Realiza operaciones espaciales de polígonos, contornos y fusiones.
-* **`Pillow`**, **`opencv-python` (`cv2`)** y **`numpy`**: Requeridos para funciones experimentales de conversión de imágenes (matrices de píxeles) a código numérico.
+### Dependencias Principales:
+* **`pyserial`**: Gestión de la comunicación por bus serial USB.
+* **`shapely`**: Motor geométrico para la construcción de buffers y la fusión de polígonos.
+* **`Pillow`**: Procesamiento de imágenes para visualizadores de interfaz.
+* **`opencv-python` y `numpy`**: Conversión y aproximación matemática de contornos en imágenes bitmap.
 
 ---
 
-## 💻 Instalación de Firmware (GRBL) y Hardware
+### 💻 Instalación en Windows
 
-Para que este software funcione, tu máquina debe estar controlada por un **Arduino UNO** (o compatible) con una **CNC Shield V3** ejecutando el firmware **GRBL v1.1**. 
-
-### Pasos para preparar el Hardware y Firmware:
-
-1. **Descargar GRBL:**
-   * Ve al repositorio oficial de GRBL en GitHub: [grbl/grbl](https://github.com/gnea/grbl)
-   * Descarga el proyecto como un archivo `.zip`.
-
-2. **Instalar GRBL en Arduino IDE:**
-   * Abre el Arduino IDE.
-   * Ve a `Programa` -> `Incluir Librería` -> `Añadir biblioteca .ZIP...` y selecciona el archivo descargado.
-   * Ve a `Archivo` -> `Ejemplos` -> `grbl` -> `grblUpload`.
-   * Conecta tu Arduino UNO por USB, selecciona la placa y puerto correctos en el IDE, y presiona **Subir**.
-
-3. **Ensamblaje Electrónico:**
-   * Monta la **CNC Shield V3** sobre el Arduino UNO.
-   * Inserta los **Drivers de los motores paso a paso** (A4988 o DRV8825) en los zócalos de los ejes X, Y y Z. *Asegúrate de instalarlos con la orientación correcta para evitar daños eléctricos.*
-   * Conecta los motores paso a paso y la fuente de alimentación externa (12V - 24V) a la bornera de la CNC Shield.
+1. **Instalar Python:**
+   * Descarga la última versión de [Python 3](https://www.python.org/downloads/) para Windows.
+   * **IMPORTANTE:** Durante la instalación, marca la casilla **"Add Python to PATH"** (Añadir Python al PATH) antes de presionar instalar.
+2. **Instalar las Dependencias:**
+   * Abre la consola de comandos (**CMD** o **PowerShell**).
+   * Ejecuta el siguiente comando:
+     ```cmd
+     pip install pyserial shapely Pillow opencv-python numpy
+     ```
+3. **Ejecutar el Software:**
+   * Navega hasta la carpeta del proyecto y ejecuta:
+     ```cmd
+     python main.py
+     ```
 
 ---
 
-## 📚 Arquitectura del Código y Funciones Principales
+### 🐧 Instalación en Linux (Ubuntu/Debian)
 
-El software implementa Programación Orientada a Objetos (POO) estructurada dentro de la clase principal `CNCControlApp`:
+En Linux, la interfaz gráfica de Python (Tkinter) no viene instalada por defecto en algunas distribuciones y debe configurarse de forma independiente junto con los permisos del puerto serial.
 
-### 1. Interfaz y Estado de Seguridad
-* `crear_interfaz(self)`: Construye los controles empleando Tkinter, con lógica de inhabilitación dinámica de botones durante el ruteo para evitar que el operario mande comandos manuales en medio de un trabajo en curso.
-
-### 2. Comunicación y Control CNC
-* `conectar_grbl(self)`: Inicializa la conexión por puerto serial físico, desbloquea GRBL enviando el comando `$X` y sincroniza las posiciones lógicas.
-* `mover_manual(self, eje, distancia)`: Envía comandos instantáneos en modo incremental (`G91 G0`) para el control de los ejes de la máquina.
-* `enviar_comando_grbl(self, comando)`: Interfaz central de envío de strings hacia la CNC con control síncrono de respuesta de confirmación (`ok`/`error`).
-
-### 3. Motor CAM y Geometría Computacional (El Núcleo Científico)
-* `generar_gcode_aislamiento(...)`: 
-  * Calcula el diámetro efectivo si la broca es cónica (V-Bit) mediante trigonometría.
-  * Realiza limpieza espacial: filtra "cruces" de relleno internas de pads cargados en el Gerber para evitar pasadas de corte innecesarias que debiliten mecánicamente el cobre de la placa.
-  * Estira ligeramente las pistas (`dist_ext = 0.4`) para asegurar una interconexión física robusta entre las líneas y los pads circulares/rectangulares.
-  * Genera trayectorias de aislamiento en bucle (`num_pasadas`) mediante offsets sucesivos usando `.buffer()` geométrico de `shapely`.
-* `generar_corte_borde(self)`: Escanea las dimensiones extremas del circuito, añade una holgura segura de 2 mm de margen a la redonda y genera un contorno G-Code progresivo de corte con descenso controlado por pasadas en el eje Z (`paso_z = 0.5`).
-
-### 4. Ejecución en Paralelo y Registro Científico
-* `iniciar_ruteo(self)` y `hilo_enviar_gcode(self)`: Ejecuta la transmisión de instrucciones G-Code en un hilo separado de la interfaz gráfica. Esto garantiza que la GUI no se congele y responda de inmediato al botón de **Parada de Emergencia**.
-* **Módulo Métrico:** Al terminar con éxito un ruteo, calcula la diferencia temporal exacta (`time.time() - self.tiempo_inicio_ruteo`), muestra los resultados en la interfaz y escribe el historial detallado en `Resultados_Tesis_Log.txt`.
+1. **Actualizar el Sistema e Instalar Python3 y Tkinter:**
+   * Abre una terminal y ejecuta:
+     ```bash
+     sudo apt update
+     sudo apt install python3 python3-pip python3-tk -y
+     ```
+2. **Configurar los Permisos del Puerto Serial (Crucial para Conectarse a la CNC):**
+   * Por defecto, Linux restringe el acceso de usuarios comunes a los dispositivos USB seriales (`ttyUSB` o `ttyACM`). Para otorgar permisos permanentes a tu usuario, agrégalo al grupo `dialout`:
+     ```bash
+     sudo usermod -a -G dialout $USER
+     ```
+   * **NOTA:** Debes cerrar sesión o reiniciar el equipo para que este cambio de permisos surta efecto.
+3. **Instalar las Dependencias de Python:**
+   * Instala los paquetes requeridos por medio de `pip`:
+     ```bash
+     pip3 install pyserial shapely Pillow opencv-python numpy
+     ```
+4. **Ejecutar el Software:**
+   * Corre el programa con:
+     ```bash
+     python3 main.py
+     ```
 
 ---
 
-## ⚙️ Guía de Operación Paso a Paso
+## ⚙️ Conexión, Firmware (GRBL) y Hardware
 
-1. **Conexión:** Selecciona el puerto serial y baudios (predeterminado 115200) y haz clic en *Conectar e Inicializar*.
-2. **Carga de Gerber:** Carga el archivo `.GBR` de pistas. Haz clic en el visualizador derecho para marcar tu "Origen (0,0)" con la cruz roja.
-3. **Parámetros CAM:** Abre *2. Configuración CAM*, define el tipo de broca (V-Bit o Cilíndrica), su diámetro físico y las pasadas de aislamiento deseadas. Genera las trayectorias verdes.
-4. **Perforación y Borde:** Si es necesario, carga los taladros con *Cargar Perforaciones* (puntos naranjas) y presiona *Generar Corte de Borde* (borde cyan).
-5. **Calibración Física:** Mueve manualmente tu CNC hasta la esquina física de la placa de cobre y haz clic en *Cero XY* y *Cero Z*.
-6. **Ejecución:** Haz clic en *▶ Iniciar Grabado PCB*. Sigue el rastro del mecanizado en tiempo real en la pantalla izquierda.
-7. **Cambio de Herramienta:** Durante las pausas automatizadas (`M0`), la máquina detendrá sus movimientos. Cambia la broca física, reajusta la altura con *Cero Z* y presiona *⏯ Continuar* para reanudar el trabajo.
+Para que el software interactúe correctamente con tu máquina, la placa controladora (usualmente **Arduino UNO + CNC Shield V3**) debe tener cargado el firmware **GRBL v1.1**.
+
+### Pasos de Preparación:
+1. **Instalar GRBL:** Descarga la librería oficial desde [gnea/grbl](https://github.com/gnea/grbl) e instálala en tu Arduino IDE usando la opción *Incluir Librería .ZIP*. Sube el ejemplo `grblUpload` a tu Arduino.
+2. **Configuración de la CNC Shield:** Acopla la Shield sobre el Arduino UNO. Asegúrate de instalar correctamente los drivers paso a paso (A4988/DRV8825) con sus respectivos disipadores de calor y jumpers de microstepping.
+3. **Calibración de Parámetros:** Desde la consola del software (botón **⚙️ Configuración GRBL**), digita `$$` para visualizar los parámetros internos de GRBL. Calibra los pasos por milímetro de tus motores de avance en base al paso de tus varillas roscadas o correas:
+   * `$100` (Eje X)
+   * `$101` (Eje Y)
+   * `$102` (Eje Z)
+
+---
+
+## 📚 Arquitectura del Código e Innovaciones de Software
+
+Este software ha sido diseñado bajo arquitectura orientada a objetos en Python, incorporando prácticas robustas de programación industrial y control en tiempo real. A continuación se detallan las clases y bloques matemáticos clave:
+
+```
+  ┌────────────────────────────────────────────────────────┐
+  │                   Tkinter Main Thread                  │
+  │  (Captura eventos GUI, Clic de Origen, Visualizadores)  │
+  └───────────┬─────────────────────────────────▲──────────┘
+              │                                 │
+              │ Inicia                          │ Envía Respuestas
+              │ Hilo Secundario                 │ y Posicionamientos
+              ▼                                 │
+  ┌─────────────────────────────────────────────┴──────────┐
+  │                 Background Thread (Worker)             │
+  │     (Envío secuencial de G-Code por Puerto Serial)     │
+  └────────────────────────────────────────────────────────┘
+```
+
+### 1. Desacoplamiento por Multithreading (Hilos)
+* **El Problema:** Al enviar miles de líneas de G-Code por el puerto serial, el programa tiene que esperar el caracter `"ok"` de respuesta de GRBL. Si esto se hace en el mismo hilo de la interfaz, la ventana de Tkinter se congelará, se mostrará como *"No Responde"* y el usuario no podrá presionar el botón de **STOP** ni ver el progreso en tiempo real.
+* **La Solución:** Implementamos un hilo independiente de ejecución mediante la librería `threading`. El método `iniciar_ruteo()` crea un hilo secundario:
+  ```python
+  threading.Thread(target=self.hilo_enviar_gcode, daemon=True).start()
+  ```
+  Esto permite que la interfaz gráfica (Hilo Principal) siga ejecutando su bucle de eventos (`mainloop`), manteniendo activos los botones de emergencia y la actualización continua del lienzo.
+
+### 2. Algoritmo Geométrico del Motor CAM (Shapely)
+El motor CAM integrado automatiza el engorroso proceso de aislar las pistas de cobre utilizando matemática de polígonos avanzados:
+* **Generación de Buffers de Compensación:** El Gerber define las pistas como líneas simples (`LineString`). Para modelar el cobre real y las zonas de aislamiento, se aplica un buffer de dilatación de radio variable:
+  ```python
+  cobre_pistas = unary_union(lineas_pistas).buffer(ancho_pista_deseado / 2.0, cap_style=1, join_style=1)
+  ```
+* **Fusión de Cobre Real (`unary_union`):** Las pistas y las almohadillas de soldadura (pads) se unifican matemáticamente eliminando las intersecciones internas. Esto evita pasadas redundantes o que la fresa corte a través de pistas que pertenecen al mismo nodo de conexión.
+* **Aislamiento Multi-Pasada:** Se calculan múltiples buffers concéntricos (`offset_base + pasada * paso_lateral`) de manera progresiva. La broca recorre los bordes externos de estas uniones para limpiar un canal ancho de cobre, reduciendo drásticamente la probabilidad de cortocircuitos por rebabas metálicas al soldar.
+
+### 3. Trigonometría Aplicada a Brocas Cónicas (V-Bit)
+A diferencia de una fresa cilíndrica de diámetro constante, las fresas de grabado de circuitos suelen ser de punta en "V" (conos). El ancho real del surco tallado varía en proporción directa a la profundidad del corte.
+El programa aplica de forma transparente la siguiente fórmula trigonométrica para calcular el diámetro real que la herramienta tendrá en el cobre:
+
+$$\text{Diámetro Efectivo} = \text{Diámetro de Punta} + 2 \cdot \left( |Z_{\text{corte}}| \cdot \tan\left(\frac{\text{Ángulo}}{2}\right) \right)$$
+
+* **Explicación en código:**
+  ```python
+  profundidad_fisica = abs(z_corte)
+  media_angulo_rad = math.radians(angulo / 2.0)
+  ensanchamiento = 2.0 * (profundidad_fisica * math.tan(media_angulo_rad))
+  diametro_efectivo = diametro + ensanchamiento
+  ```
+  Esto compensa automáticamente la desviación geométrica, garantizando un ancho de aislamiento preciso y protegiendo las pistas finas de ser destruidas por un ensanchamiento excesivo en V.
+
+### 4. Sincronización y Cambio de Herramienta Semiautomático (M0 Tool Change)
+Dado que fabricar un PCB requiere tres procesos secuenciales de diámetros y características mecánicas totalmente diferentes (Aislamiento de pistas, Perforación de componentes y Recorte del contorno), el software integra comandos de parada física e instrucciones interactivas:
+* **Secuencia de Calibración de Broca:** Entre procesos, se insertan comandos `M0` (Program Stop) con retardos de sincronía `G4 P1.0` que detienen la máquina físicamente y apagan el husillo.
+* **Procedimiento Paso a Paso en Código:**
+  1. La CNC termina el ruteo, eleva Z, viaja al origen X0 Y0 y se detiene (`M0`). El usuario retira la broca de ruteo e introduce la de taladrado (dejándola libre).
+  2. Al presionar **Continuar**, el software baja a `Z0.0` y vuelve a detenerse (`M0`). El usuario baja la broca suelta hasta que toque físicamente el cobre y la aprieta.
+  3. Esto asegura una nivelación perfecta del eje Z en 0 sin necesidad de sensores externos costosos. Al presionar **Continuar** nuevamente, la máquina eleva Z a su altura de seguridad y procede a perforar con precisión absoluta.
+
+### 5. Análisis Predictivo de Dimensiones
+Para proteger el hardware ante colisiones mecánicas, el programa analiza la lista completa de G-Code antes de enviarlo:
+```python
+match_x = re.search(r'X[:\s=]*([-0-9.]+)', linea_limpia)
+```
+Escanea el G-Code en busca de las coordenadas extremas y determina de manera automática las dimensiones máximas y mínimas en milímetros del contorno útil. Si estas dimensiones exceden los límites físicos de tu máquina o de la placa física cargada, el operario es alertado en la barra de estado antes de pulsar el botón de encendido.
+
+---
